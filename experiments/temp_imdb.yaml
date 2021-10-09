@@ -1,6 +1,6 @@
 dataset:
-  name: FewNERD
-  path: datasets/Typing/FewNERD
+  name: imdb
+  path: datasets/TextClassification/imdb
 
 plm:
   model_name: roberta
@@ -14,7 +14,7 @@ plm:
       num_warmup_steps: 500
 
 train:
-  batch_size: 8
+  batch_size: 2
 
 test:
   batch_size: 8
@@ -29,18 +29,17 @@ verbalizer: manual_verbalizer
 
 
 manual_template:
-  choice: 1
-  file_path: scripts/Typing/FewNERD/manual_template.txt
+  choice: 0
+  file_path: scripts/TextClassification/imdb/manual_template.txt
 
 manual_verbalizer:
   choice: 0
-  file_path: scripts/Typing/FewNERD/fewnerd_verbalizer.json
+  file_path: scripts/TextClassification/imdb/knowledgeable_verbalizer.txt
   
 environment:
-  num_gpus: 2
+  num_gpus: 1
   cuda_visible_devices:
-    - 2
-    - 7
+    - 5
   local_rank: 0 
 
 learning_setting: few_shot

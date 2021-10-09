@@ -53,7 +53,8 @@ def load_template(config: CfgNode,
         template_class = TEMPLATE_CLASS[config.template]
         template = template_class.from_config(config=config[config.template], 
                                      **kwargs)
-    return template
+        return template
+    return None
 
 def load_verbalizer(config: CfgNode,
                 **kwargs,
@@ -73,4 +74,5 @@ def load_verbalizer(config: CfgNode,
         verbalizer_class = VERBALIZER_CLASS[config.verbalizer]
         verbalizer = verbalizer_class.from_config(config=config[config.verbalizer], 
                                      **kwargs)
-    return verbalizer
+        return verbalizer
+    return None

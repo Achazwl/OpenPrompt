@@ -1,3 +1,4 @@
+<text_a> It was <mask> .
 It was <mask> . <text_a>
 Just <mask> ! <text_a>
 <text_a> All in all, it was <mask> .

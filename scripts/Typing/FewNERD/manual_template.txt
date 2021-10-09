@@ -1,1 +1,3 @@
-<text_a> <meta:entity> is <mask>
+<text_a> <meta:entity> is <mask> .
+<text_a> <meta:entity> is a <mask> .
+<text_a> In this sentence , <meta:entity> is a <mask> .

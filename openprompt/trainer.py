@@ -239,55 +239,55 @@ class ClassificationRunner(BaseRunner):
             pass
 
         ## template_config 
-        template_config = self.config[self.config.template]
-        if hasattr(template_config, "optimize") and template_config.optimize is not None:
-            if not hasattr(self.inner_model.template, "optimize"):
-                # using default gradient descent optimizer.
-                self.template_optimizer = AdamW(self.inner_model.template.parameters(), lr = template_config.optimize.lr)
-                if hasattr(template_config.optimize, "scheduler") and template_config.optimize.scheduler is not None:
-                    self.template_scheduler = get_linear_schedule_with_warmup(
-                        self.template_optimizer, 
-                        num_warmup_steps = template_config.optimize.scheduler.num_warmup_steps, 
-                        num_training_steps = num_training_steps
-                    )
+        self.template_optimizer = None
+        self.template_scheduler = None
+        if self.config.template:
+            template_config = self.config[self.config.template]
+            if hasattr(template_config, "optimize") and template_config.optimize is not None:
+                if not hasattr(self.inner_model.template, "optimize"):
+                    # using default gradient descent optimizer.
+                    self.template_optimizer = AdamW(self.inner_model.template.parameters(), lr = template_config.optimize.lr)
+                    if hasattr(template_config.optimize, "scheduler") and template_config.optimize.scheduler is not None:
+                        self.template_scheduler = get_linear_schedule_with_warmup(
+                            self.template_optimizer, 
+                            num_warmup_steps = template_config.optimize.scheduler.num_warmup_steps, 
+                            num_training_steps = num_training_steps
+                        )
+                    else:
+                        self.template_scheduler = None
                 else:
+                    self.template_optimizer = Dummy()
+                    # resemble a pytorch optimizer for unified training.
+                    setattr(self.template_optimizer, "step", self.inner_model.template.optimize)
+                    setattr(self.template_optimizer, "zero_grad", lambda:None)
                     self.template_scheduler = None
-            else:
-                self.template_optimizer = Dummy()
-                # resemble a pytorch optimizer for unified training.
-                setattr(self.template_optimizer, "step", self.inner_model.template.optimize)
-                setattr(self.template_optimizer, "zero_grad", lambda:None)
-                self.template_scheduler = None
-        else:
-            self.template_optimizer = None
-            self.template_scheduler = None
             
         
         
 
         ## verbalizer_optimizer
-        verbalizer_config = self.config[self.config.verbalizer]
-        if hasattr(verbalizer_config, "optimize") and verbalizer_config.optimize is not None:
-            if not hasattr(self.inner_model.verbalizer, "optimize"):
-                # using default gradient descent optimizer.
-                self.verbalizer_optimizer = AdamW(self.inner_model.verbalizer.parameters(), lr = verbalizer_config.optimize.lr)
-                if hasattr(verbalizer_config.optimize, "scheduler") and verbalizer_config.optimize.scheduler is not None:
-                    self.verbalizer_scheduler = get_linear_schedule_with_warmup(
-                        self.verbalizer_optimizer, 
-                        num_warmup_steps = verbalizer_config.optimize.scheduler.num_warmup_steps, 
-                        num_training_steps = num_training_steps
-                    )
+        self.verbalizer_optimizer = None
+        self.verbalizer_scheduler = None
+        if self.config.verbalizer:
+            verbalizer_config = self.config[self.config.verbalizer]
+            if hasattr(verbalizer_config, "optimize") and verbalizer_config.optimize is not None:
+                if not hasattr(self.inner_model.verbalizer, "optimize"):
+                    # using default gradient descent optimizer.
+                    self.verbalizer_optimizer = AdamW(self.inner_model.verbalizer.parameters(), lr = verbalizer_config.optimize.lr)
+                    if hasattr(verbalizer_config.optimize, "scheduler") and verbalizer_config.optimize.scheduler is not None:
+                        self.verbalizer_scheduler = get_linear_schedule_with_warmup(
+                            self.verbalizer_optimizer, 
+                            num_warmup_steps = verbalizer_config.optimize.scheduler.num_warmup_steps, 
+                            num_training_steps = num_training_steps
+                        )
+                    else:
+                        self.verbalizer_scheduler = None
                 else:
+                    self.verbalizer_optimizer = Dummy()
+                    # resemble a pytorch optimizer for unified training.
+                    setattr(self.verbalizer_optimizer, "step", self.inner_model.verbalizer.optimize)
+                    setattr(self.verbalizer_optimizer, "zero_grad", lambda:None)
                     self.verbalizer_scheduler = None
-            else:
-                self.verbalizer_optimizer = Dummy()
-                # resemble a pytorch optimizer for unified training.
-                setattr(self.verbalizer_optimizer, "step", self.inner_model.verbalizer.optimize)
-                setattr(self.verbalizer_optimizer, "zero_grad", lambda:None)
-                self.verbalizer_scheduler = None
-        else:
-            self.verbalizer_optimizer = None
-            self.verbalizer_scheduler = None
 
         self.optimizers = [self.model_optimizer, self.template_optimizer, self.verbalizer_optimizer]
         self.schedulers = [self.model_scheduler, self.template_scheduler, self.verbalizer_scheduler]
@@ -351,13 +351,12 @@ class ClassificationRunner(BaseRunner):
         return total_loss
     
     def prompt_initialize(self):
-        verbalizer_config = self.config[self.config.verbalizer]
         template_config = self.config[self.config.template]
         if not hasattr(self.inner_model.verbalizer, "optimize_to_initialize" ) and \
             not hasattr(self.inner_model.template, "optimize_to_initialize" ):
             return None
-        if hasattr(verbalizer_config, "init_using_split"):
-            using_split = verbalizer_config.init_using_split
+        if self.config.verbalizer and hasattr(self.config[self.config.verbalizer], "init_using_split"):
+            using_split = self.config[self.config.verbalizer].init_using_split
         elif hasattr(template_config, "init_using_split"):
             using_split = template_config.init_using_split
         else:

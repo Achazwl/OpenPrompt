@@ -250,7 +250,11 @@ class PromptForClassification(nn.Module):
         outputs = self.prompt_model(batch)
         logits = outputs.logits
         logits = self.extract_logits(logits, batch)
-        label_words_logits = self.verbalizer.process_logits(logits=logits, batch=batch)
+        if self.verbalizer:
+            label_words_logits = self.verbalizer.process_logits(logits=logits, batch=batch)
+            return label_words_logits
+        else:
+            return logits
 
         if 'label' in batch:
             pass #TODO add caculate label loss here
@@ -281,15 +285,19 @@ class PromptForClassification(nn.Module):
         """
         _state_dict = {}
         _state_dict['plm'] = self.model.state_dict()
-        _state_dict['template'] = self.template.state_dict()
-        _state_dict['verbalizer'] = self.verbalizer.state_dict()
+        if self.template:
+            _state_dict['template'] = self.template.state_dict()
+        if self.verbalizer:
+            _state_dict['verbalizer'] = self.verbalizer.state_dict()
         return _state_dict
     
     def load_state_dict(self, state_dict):
         if 'plm' in state_dict:
             self.model.load_state_dict(state_dict['plm'])
-        self.template.load_state_dict(state_dict['template'])
-        self.verbalizer.load_state_dict(state_dict['verbalizer'])
+        if self.template:
+            self.template.load_state_dict(state_dict['template'])
+        if self.verbalizer:
+            self.verbalizer.load_state_dict(state_dict['verbalizer'])
 
 
 
