@@ -51,42 +51,20 @@ if __name__ == "__main__":
         print()
 
         while True:
-            from openprompt.data_utils import InputExample
-            text = input_enter("text")
-            '''
-            Albert Einstein was one of the greatest intellects of his time.
-            '''
-            dataset = [
-                InputExample(
-                    guid = 0,
-                    text_a = text,
-                )
-            ]
-
-            template = input_enter("Prompt Template")
-            '''
-                <text_a> It is <mask>
-                <text_a> Albert Einstein is a <mask>
-                Albert Einstein was born in <mask>
-            '''
-            from openprompt.prompts import ManualTemplate
-            template = ManualTemplate(
-                text = template.split(),
-                tokenizer = bertTokenizer,
-            )
-
             verbalizer = input_selection("Prompt Verbalizer", [
                 'Sentiment Verbalizer',
                 'Entity Verbalizer',
                 'Knowledge Probing',
-                'Customize'
+                'Customize ( e.g. {"negative": ["bad"], "positive": ["good"]} )'
             ])
+            text = None
             classes = None
             logging_path = None
             if verbalizer == 'Knowledge Probing':
+                text = ""
                 verbalizer = None
                 classes = {v:k for k,v in bertTokenizer.get_vocab().items()}
-                # logging_path = "logs/LAMA"
+                logging_path = "logs/LAMA"
             else:
                 label_words = None
                 if verbalizer == "Entity Verbalizer":
@@ -172,7 +150,7 @@ if __name__ == "__main__":
                         "positive": ["absolutely", "accepted", "acclaimed", "accomplish", "accomplishment", "achievement", "action", "active", "admire", "adorable", "adventure", "affirmative", "affluent", "agree", "agreeable", "amazing", "angelic", "appealing", "approve", "aptitude", "attractive", "awesome", "beaming", "beautiful", "believe", "beneficial", "bliss", "bountiful", "bounty", "brave", "bravo", "brilliant", "bubbly", "calm", "celebrated", "certain", "champ", "champion", "charming", "cheery", "choice", "classic", "classical", "clean", "commend", "composed", "congratulation", "constant", "cool", "courageous", "creative", "cute", "dazzling", "delight", "delightful", "distinguished", "divine", "earnest", "easy", "ecstatic", "effective", "effervescent", "efficient", "effortless", "electrifying", "elegant", "enchanting", "encouraging", "endorsed", "energetic", "energized", "engaging", "enthusiastic", "essential", "esteemed", "ethical", "excellent", "exciting", "exquisite", "fabulous", "fair", "familiar", "famous", "fantastic", "favorable", "fetching", "fine", "fitting", "flourishing", "fortunate", "free", "fresh", "friendly", "fun", "funny", "generous", "genius", "genuine", "giving", "glamorous", "glowing", "good", "gorgeous", "graceful", "great", "green", "grin", "growing", "handsome", "happy", "harmonious", "healing", "healthy", "hearty", "heavenly", "honest", "honorable", "honored", "hug", "idea", "ideal", "imaginative", "imagine", "impressive", "independent", "innovate", "innovative", "instant", "instantaneous", "instinctive", "intellectual", "intelligent", "intuitive", "inventive", "jovial", "joy", "jubilant", "keen", "kind", "knowing", "knowledgeable", "laugh", "learned", "legendary", "light", "lively", "lovely", "lucid", "lucky", "luminous", "marvelous", "masterful", "meaningful", "merit", "meritorious", "miraculous", "motivating", "moving", "natural", "nice", "novel", "now", "nurturing", "nutritious", "okay", "one", "one-hundred percent", "open", "optimistic", "paradise", "perfect", "phenomenal", "pleasant", "pleasurable", "plentiful", "poised", "polished", "popular", "positive", "powerful", "prepared", "pretty", "principled", "productive", "progress", "prominent", "protected", "proud", "quality", "quick", "quiet", "ready", "reassuring", "refined", "refreshing", "rejoice", "reliable", "remarkable", "resounding", "respected", "restored", "reward", "rewarding", "right", "robust", "safe", "satisfactory", "secure", "seemly", "simple", "skilled", "skillful", "smile", "soulful", "sparkling", "special", "spirited", "spiritual", "stirring", "stunning", "stupendous", "success", "successful", "sunny", "super", "superb", "supporting", "surprising", "terrific", "thorough", "thrilling", "thriving", "tops", "tranquil", "transformative", "transforming", "trusting", "truthful", "unreal", "unwavering", "up", "upbeat", "upright", "up", "standing", "valued", "vibrant", "victorious", "victory", "vigorous", "virtuous", "vital", "vivacious", "wealthy", "welcome", "well", "whole", "wholesome", "willing", "wonderful", "wondrous", "worthy", "wow", "yes", "yummy", "zeal", "zealous"]
                     }
                     logging_path = "logs/IMDB"
-                elif verbalizer == "Customize":
+                elif verbalizer.startswith("Customize"):
                     label_words = json.loads(input(">>> "))
                 classes = list(label_words.keys())
                 from openprompt.prompts import ManualVerbalizer
@@ -181,6 +159,32 @@ if __name__ == "__main__":
                     label_words = label_words,
                     tokenizer = bertTokenizer
                 )
+
+            from openprompt.data_utils import InputExample
+            if text is None:
+                text = input_enter("text")
+            '''
+            Albert Einstein was one of the greatest intellects of his time.
+            '''
+            dataset = [
+                InputExample(
+                    guid = 0,
+                    text_a = text,
+                )
+            ]
+
+            template = input_enter("Prompt Template")
+            '''
+                <text_a> It is <mask>
+                <text_a> Albert Einstein is a <mask>
+                Albert Einstein was born in <mask>
+            '''
+            from openprompt.prompts import ManualTemplate
+            template = ManualTemplate(
+                text = template.split(),
+                tokenizer = bertTokenizer,
+            )
+
 
             progress_print(f"Incorporating {color('Template')} and {color('Verbalizer')} into a {color('PromptModel')}")
             from openprompt import PromptForClassification
@@ -227,6 +231,7 @@ if __name__ == "__main__":
             else:
                 print(f"{color('Predicition')}: ", classes[pred[0]], f"(triggered by label words: {label_words[classes[pred[0]]][:6]})")
 
+            input()
             print()
             print("=======================================================")
             print()
