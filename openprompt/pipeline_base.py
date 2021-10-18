@@ -130,12 +130,10 @@ class PromptDataLoader(object):
             inputfeatures = InputFeatures(**self.tokenizer_wrapper.tokenize_one_example(wrapped_example, self.teacher_forcing), **wrapped_example[1]).to_tensor()
             self.tensor_dataset.append(inputfeatures)
         
-
-
-    def __getitem__(self, idx):
-        r"""simulate the ``torch.utils.data.Dataset``'s behavior.
-        """
-        return self.tensor_dataset[idx]
+    # def __getitem__(self, idx):
+    #     r"""simulate the ``torch.utils.data.Dataset``'s behavior.
+    #     """
+    #     return self.tensor_dataset[idx]
     
     def __len__(self):
         return  len(self.dataloader)
@@ -248,9 +246,6 @@ class PromptForClassification(nn.Module):
         logits = outputs.logits
         logits = self.extract_logits(logits, batch)
         label_words_logits = self.verbalizer.process_logits(logits=logits, batch=batch)
-
-        if 'label' in batch:
-            pass #TODO add caculate label loss here
 
         return label_words_logits
     

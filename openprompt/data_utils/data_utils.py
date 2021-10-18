@@ -168,7 +168,7 @@ class InputFeatures(dict):
     def __len__(self):
         return len(self.keys())
 
-    def to_tensor(self, device: str = 'cuda'):
+    def to_tensor(self):
         """inplace operation, convert all tensorable features into :obj:`torch.tensor`"""
         for key in self.tensorable_keys:
             value = getattr(self, key)
@@ -225,7 +225,7 @@ class InputFeatures(dict):
         for key in self.all_keys:
             value = getattr(self, key)
             if value is not None:
-                data[key] =  value
+                data[key] = value
             elif value is None and keep_none:
                 data[key] = None
         return data

@@ -2,43 +2,32 @@ import os
 import sys
 sys.path.append(".")
 
-
-from openprompt.trainer import ClassificationRunner, GenerationRunner
-from typing import Union
-from torch.nn.parallel.data_parallel import DataParallel
-from re import template
-from torch._C import device
-from openprompt.pipeline_base import PromptForClassification, PromptForGeneration
-from tqdm import tqdm
 import argparse
-import torch
+
+from pytorch_lightning import Trainer as PLTrainer
+from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.loggers import TensorBoardLogger
+from openprompt.trainer import ClassificationRunner, GenerationRunner
+
+from openprompt.pipeline_base import PromptForClassification, PromptForGeneration
 from openprompt.utils.reproduciblity import set_seed
-from openprompt.plms import get_model_class
-from openprompt import PromptDataLoader, PromptModel
+from openprompt import PromptDataLoader
 from openprompt.prompts import load_template, load_verbalizer
 from openprompt.data_utils import FewShotSampler
 from openprompt.utils.logging import config_experiment_dir, init_logger, logger
-from openprompt.utils.metrics import classification_metrics
-from openprompt.utils.calibrate import calibrate
-from transformers import  AdamW, get_constant_schedule_with_warmup, get_linear_schedule_with_warmup
 from openprompt.config import get_yaml_config
 from openprompt.plms import load_plm
 from openprompt.data_utils import load_dataset
-from openprompt.utils.cuda import model_to_device
 from openprompt.utils.utils import check_config_conflicts
-import logging
-
-
 
 
 
 def get_config():
     parser = argparse.ArgumentParser("classification config")
     parser.add_argument("--config_yaml", type=str, help='the configuration file for this experiment.')
-    parser.add_argument("--resume", action="store_true", help='whether to resume a training from the latest checkpoint.\
+    parser.add_argument("--resume", type=str, help='a specified checkpoint path to resume training, usually last.ckpt\
            It will fall back to run from initialization if no lastest checkpoint are found.')
-    parser.add_argument("--test", action="store_true", help='whether to resume a training from the latest checkpoint.\
-           It will fall back to run from initialization if no lastest checkpoint are found.') #
+    parser.add_argument("--test", type=str, help='a specified checkpoint path to test.')
     args = parser.parse_args()
     config = get_yaml_config(args.config_yaml)
     check_config_conflicts(config)
@@ -70,10 +59,13 @@ def save_config_to_yaml(config):
 def main():
     config, args = get_config()
     # init logger, create log dir and set log level, etc.
-    if not args.resume:
-        EXP_PATH = config_experiment_dir(config)
+    if args.resume and args.test:
+        raise ValueError("Cannot set --resume and --test arguments at the same time. ")
+    elif args.resume or args.test:
+        EXP_PATH = args.resume or args.test
+        config.logging.path = None # TODO
     else:
-        EXP_PATH = config.logging.path
+        EXP_PATH = config_experiment_dir(config)
     
     init_logger(EXP_PATH+"/log.txt", config.logging.file_level, config.logging.console_level)
     # save config to the logger directory
@@ -84,7 +76,7 @@ def main():
     # load the pretrained models, its model, tokenizer, and config.
     plm_model, plm_tokenizer, plm_config = load_plm(config)
     # load dataset. The valid_dataset can be None
-    train_dataset, valid_dataset, test_dataset, Processor = load_dataset(config)
+    train_dataset, valid_dataset, test_dataset, Processor = load_dataset(config) # TODO For effeciecy, load dataset needed only.
     
     if config.task == "classification":
         # define prompt
@@ -95,13 +87,13 @@ def main():
     elif config.task == "generation":
         template = load_template(config=config, model=plm_model, tokenizer=plm_tokenizer, plm_config=plm_config)
         prompt_model = PromptForGeneration(plm_model, template, gen_config=config.generation)
-    # move the model to device:
-    prompt_model = model_to_device(prompt_model, config.environment)
+    else:
+        raise NotImplementedError(f"config.task {config.task} is not implemented yet. Only classification and generation are supported.")
 
     # process data and get data_loader
     if config.learning_setting == 'full':
         pass
-    elif config.learning_setting == 'few_shot':
+    elif config.learning_setting == 'few_shot': # TODO make seed a list, run multiple times, get mean performance
         if config.few_shot.few_shot_sampling is not None:
             sampler = FewShotSampler(
                 num_examples_per_label = config.sampling_from_train.num_examples_per_label,
@@ -114,41 +106,52 @@ def main():
                 seed = config.sampling_from_train.seed
             )
     elif config.learning_setting == 'zero_shot':
-        pass
+        pass # TODO without training
     
-    if config.calibrate is not None:
-        assert isinstance(prompt_model, PromptForClassification), "The type of model doesn't support calibration."
-        calibrate(prompt_model, config)
-
     train_dataloader = build_dataloader(train_dataset, template, plm_tokenizer, config, "train")
     valid_dataloader = build_dataloader(valid_dataset, template, plm_tokenizer, config, "dev")
     test_dataloader = build_dataloader(test_dataset, template, plm_tokenizer, config, "test")
-    # test_dataloader = valid_dataloader  # if the test size is big, replace it with valid_dataloader for debugging.
+
     if config.task == "classification":
-        runner = ClassificationRunner(prompt_model = prompt_model,
-                                train_dataloader = train_dataloader,
-                                valid_dataloader = valid_dataloader,
-                                test_dataloader = test_dataloader,
-                                config = config)
+        model = ClassificationRunner(prompt_model, config)
     elif config.task == "generation":
-        runner = GenerationRunner(prompt_model = prompt_model,
-                                train_dataloader = train_dataloader,
-                                valid_dataloader = valid_dataloader,
-                                test_dataloader = test_dataloader,
-                                config = config)
+        model = GenerationRunner(prompt_model, config)
+
+    trainer = PLTrainer(
+        gpus = config.environment.num_gpus,
+
+        max_epochs = config.train.num_epochs,
+        accumulate_grad_batches = config.train.gradient_accumulation_steps,
+
+        gradient_clip_algorithm = "norm",
+        gradient_clip_val = config.train.max_grad_norm,
+
+        resume_from_checkpoint = args.resume, # TODO which path
+
+        # enable_checkpointing = True, # TODO lightning version
+        callbacks = [
+            ModelCheckpoint(
+                monitor = "val_metric", # TODO
+                save_top_k = 1,
+                save_last = True,
+                mode = "max",
+
+                dirpath = EXP_PATH + "/checkpoints",
+                filename = "{epoch:02d}-{val_metric:.2f}", # TODO
+            ),
+        ],
+
+        logger = TensorBoardLogger(
+            save_dir = EXP_PATH + "/logger",
+            name = "",
+        ),
+    )
+
+    if args.test:
+        trainer.test(test_dataloader = test_dataloader, ckpt_path = args.test) # TODO ckpt_path
     else:
-        raise NotImplementedError
-    if not args.resume:
-        runner.run()
-    else:
-        if args.test: #
-            runner.test()#
-        else:#
-            runner.resume()
-
-
-
+        trainer.fit(model, train_dataloaders = train_dataloader, val_dataloaders = valid_dataloader)
+        trainer.test(test_dataloaders = test_dataloader)
 
 if __name__ == "__main__":
     main()
-    # get_config()
