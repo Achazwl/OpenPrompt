@@ -79,29 +79,6 @@ def check_config_conflicts(config: CfgNode):
             )
             raise RuntimeError
 
-def save_checkpoint(state_dict, is_best, save_path, filename='checkpoint.pt'):
-    r"""save the checkpoint to :obj:`save_path`.
-    """
-    full_file_path= os.path.join(save_path, filename)
-    logger.info("Saving the lastest checkpoint.")
-    torch.save(state_dict, full_file_path, pickle_module=dill)
-    if is_best:
-        full_best_path= os.path.join(save_path, 'best.'+filename)
-        logger.info("Saving the best checkpoint.")
-        shutil.copyfile(full_file_path, full_best_path)
-            
-def load_checkpoint(load_path, load_best, filename="checkpoint.pt", map_location=None):
-    r"""load the checkpoint from :obj:`load_path`.
-    """
-    if load_best:
-        full_file_path= os.path.join(load_path, "best."+filename)
-        logger.info("Loading the best checkpoint.")
-    else:
-        full_file_path= os.path.join(load_path, filename)
-        logger.info("Loading the latest checkpoint.")
-    state_dict = torch.load(full_file_path,pickle_module=dill, map_location=map_location)
-    return state_dict
-
 
 
 

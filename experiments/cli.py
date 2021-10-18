@@ -83,10 +83,10 @@ def main():
         template = load_template(config=config, model=plm_model, tokenizer=plm_tokenizer, plm_config=plm_config)
         verbalizer = load_verbalizer(config=config, model=plm_model, tokenizer=plm_tokenizer, plm_config=plm_config, classes=Processor.labels)
         # load prompt’s pipeline model
-        prompt_model = PromptForClassification(plm_model, template, verbalizer)
+        prompt_model = PromptForClassification(plm_model, template, verbalizer, freeze_plm=config.plm.optimize.freeze_para)
     elif config.task == "generation":
         template = load_template(config=config, model=plm_model, tokenizer=plm_tokenizer, plm_config=plm_config)
-        prompt_model = PromptForGeneration(plm_model, template, gen_config=config.generation)
+        prompt_model = PromptForGeneration(plm_model, template, gen_config=config.generation, freeze_plm=config.plm.optimize.freeze_para)
     else:
         raise NotImplementedError(f"config.task {config.task} is not implemented yet. Only classification and generation are supported.")
 
@@ -108,7 +108,7 @@ def main():
     elif config.learning_setting == 'zero_shot':
         pass # TODO without training
     
-    train_dataloader = build_dataloader(train_dataset, template, plm_tokenizer, config, "train")
+    train_dataloader = build_dataloader(train_dataset, template, plm_tokenizer, config, "train") # TODO batch size should be per_gpu batch_size
     valid_dataloader = build_dataloader(valid_dataset, template, plm_tokenizer, config, "dev")
     test_dataloader = build_dataloader(test_dataset, template, plm_tokenizer, config, "test")
 
@@ -126,7 +126,7 @@ def main():
         gradient_clip_algorithm = "norm",
         gradient_clip_val = config.train.max_grad_norm,
 
-        resume_from_checkpoint = args.resume, # TODO which path
+        resume_from_checkpoint = args.resume, # TODO ckpt path
 
         # enable_checkpointing = True, # TODO lightning version
         callbacks = [
@@ -148,10 +148,10 @@ def main():
     )
 
     if args.test:
-        trainer.test(test_dataloader = test_dataloader, ckpt_path = args.test) # TODO ckpt_path
+        trainer.test(dataloaders = test_dataloader, ckpt_path = args.test) # TODO ckpt_path
     else:
         trainer.fit(model, train_dataloaders = train_dataloader, val_dataloaders = valid_dataloader)
-        trainer.test(test_dataloaders = test_dataloader)
+        trainer.test(dataloaders = test_dataloader, ckpt_path = 'best')
 
 if __name__ == "__main__":
     main()

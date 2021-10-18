@@ -5,107 +5,24 @@ sys.path.append(".")
 from torch.utils.data import dataloader
 
 import pytorch_lightning as pl
-from openprompt.utils.utils import load_checkpoint, save_checkpoint
 from typing import Callable, OrderedDict, Union
-from torch.nn.parallel.data_parallel import DataParallel
 from openprompt.pipeline_base import PromptForClassification, PromptForGeneration
 from tqdm import tqdm
 import torch
-from openprompt import PromptDataLoader
 from openprompt.prompts import *
-from openprompt.utils.logging import logger
 from openprompt.utils.metrics import classification_metrics, generation_metric
 from transformers import  AdamW, get_linear_schedule_with_warmup
 from openprompt.utils.calibrate import calibrate
 
-
-#     def run(self, start_epoch: int=0, max_score: float=0.0):
-#         if start_epoch == 0:
-#             self.prompt_initialize()
-#             max_score = None
-#         for epoch in range(start_epoch, self.config.train.num_epochs):
-#             total_loss = self.train_epoch(epoch)
-#             scores = self.evaluate(self.valid_dataloader, "Valid")
-#             model_state_dict = self.inner_model.state_dict()
-#             if self.config.plm.optimize.freeze_para:
-#                 model_state_dict.pop('plm')
-#             state_dict = {
-#                 "epoch": epoch+1,
-#                 "state_dict": self.inner_model.state_dict(),
-#                 "optimizer": [opt.state_dict() if isinstance(opt, torch.optim.Optimizer) else None for opt in self.optimizers] ,
-#                 "scheduler": [sch.state_dict() if isinstance(sch, torch.optim.lr_scheduler._LRScheduler) else None for sch in self.schedulers],
-#                 "scores": scores,
-#                 "max_score": max_score
-#             }
-#             cur_score = scores.popitem()[1]
-
-#             is_best = ((cur_score - max_score)>=0) == \
-#                 self.config.checkpoint.higher_better if max_score is not None else True
-#             if is_best:
-#                 max_score = cur_score
-#             save_checkpoint(state_dict = state_dict, 
-#                             is_best=(is_best and self.config.checkpoint.save_best), 
-#                             save_path=self.config.logging.path)
-#         state_dict = load_checkpoint(load_path=self.config.logging.path,
-#                         load_best = self.config.checkpoint.save_best,
-#                         map_location="cpu", # cpu to prevent CUDA out of memory.
-#                         )
-#         self.inner_model.load_state_dict(state_dict['state_dict'])
-#         self.inner_model.to("cuda:{}".format(self.config.environment.local_rank))
-#         self.evaluate(self.test_dataloader, "Test")
-
-#     def resume(self, ):
-#         logger.info("Resume Training ...")
-#         try:
-#             state_dict = load_checkpoint(load_path=self.config.logging.path,
-#                     load_best = False,
-#                     map_location="cpu", # cpu to prevent CUDA out of memory.
-#                     )
-#         except FileNotFoundError:
-#             logger.warning("No checkpoint found in {}, start from scratch.".format(self.config.logging.path))
-#             self.run()
-#             return 
-        
-#         # load state to model
-#         self.inner_model.load_state_dict(state_dict['state_dict'])
-#         self.inner_model.to("cuda:{}".format(self.config.environment.local_rank))
-#         # load state to optimizers
-#         for optimizer, op_state in zip(self.optimizers, state_dict['optimizer']):
-#             if isinstance(optimizer, torch.optim.Optimizer):
-#                 optimizer.load_state_dict(op_state)
-#         for scheduler, sc_state in zip(self.schedulers, state_dict['scheduler']):
-#             if isinstance(scheduler, torch.optim.lr_scheduler._LRScheduler):
-#                 scheduler.load_state_dict(sc_state)
-#         # run
-#         self.run(start_epoch=state_dict['epoch'], max_score=state_dict['max_score'])
-        
-#     def test(self, ):
-#         logger.info("Resume Training and direct test...")
-#         try:
-#             state_dict = load_checkpoint(load_path=self.config.logging.path,
-#                     load_best = False,
-#                     map_location="cpu", # cpu to prevent CUDA out of memory.
-#                     )
-#         except FileNotFoundError:
-#             logger.error("No checkpoint found in {}, can't test.".format(self.config.logging.path))
-#             exit()
-        
-#         # load state to model
-#         self.inner_model.load_state_dict(state_dict['state_dict'])
-#         self.inner_model.to("cuda:{}".format(self.config.environment.local_rank))
-#         self.evaluate(self.test_dataloader, "Test")
-
-
-
-
 class ClassificationRunner(pl.LightningModule):
     def __init__(self, 
-                 prompt_model: Union[DataParallel, PromptForClassification],
+                 model: PromptForClassification,
                  config: CfgNode = None,
                  loss_function: Optional[Callable] = None,
                 ):
         super().__init__()
-        self.model = prompt_model
+
+        self.model = model
         self.config = config
         self.loss_function = loss_function if loss_function else self.config_loss_function()
     
@@ -118,6 +35,28 @@ class ClassificationRunner(pl.LightningModule):
             return torch.nn.NLLLoss()
         else:
             raise NotImplementedError
+
+    @property
+    def num_training_steps(self) -> int:
+        """Total training steps inferred from datamodule and devices."""
+        if self.trainer.max_steps:
+            return self.trainer.max_steps
+
+        limit_batches = self.trainer.limit_train_batches
+        batches = len(self.train_dataloader())
+        batches = min(batches, limit_batches) if isinstance(limit_batches, int) else int(
+            limit_batches * batches)
+
+        num_devices = max(1, self.trainer.num_gpus, self.trainer.num_processes)
+        if self.trainer.tpu_cores:
+            num_devices = max(num_devices, self.trainer.tpu_cores)
+
+        effective_accum = self.trainer.accumulate_grad_batches * num_devices
+        return (batches // effective_accum) * self.trainer.max_epochs
+
+    @property
+    def steps_per_epoch(self) -> int:
+        return self.num_training_steps // self.trainer.max_epochs
     
     def configure_optimizers(self):
         r"""config the optimizer and scheduler for 1. model 2. template 3. verbalizer
@@ -125,16 +64,12 @@ class ClassificationRunner(pl.LightningModule):
         
         optimizers = []
 
-        # self.train_steps_per_epoch = len(self.train_dataloader) // self.config.train.gradient_accumulation_steps
-        # num_training_steps = self.train_steps_per_epoch * self.config.train.num_epochs
-        num_training_steps = 100 # TODO how to get
-
         if not self.config.plm.optimize.freeze_para:
             no_decay = self.config.plm.optimize.no_decay
             weight_decay = self.config.plm.optimize.weight_decay
             optimizer_grouped_parameters = [
-                {'params': [p for n, p in self.model.model.named_parameters() if not any(nd in n for nd in no_decay)], 'weight_decay': weight_decay},
-                {'params': [p for n, p in self.model.model.named_parameters() if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
+                {'params': [p for n, p in self.model.prompt_model.named_parameters() if not any(nd in n for nd in no_decay)], 'weight_decay': weight_decay},
+                {'params': [p for n, p in self.model.prompt_model.named_parameters() if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
             ]
 
             optimizer = {}
@@ -149,7 +84,7 @@ class ClassificationRunner(pl.LightningModule):
                 optimizers[-1]["lr_scheduler"] = get_linear_schedule_with_warmup(
                     optimizers[-1]["optimizer"],
                     num_warmup_steps = self.config.plm.optimize.scheduler.num_warmup_steps, 
-                    num_training_steps = num_training_steps
+                    num_training_steps = self.num_training_steps
                 )
 
         class Dummy:
@@ -166,7 +101,7 @@ class ClassificationRunner(pl.LightningModule):
                     optimizers[-1]["lr_scheduler"] = get_linear_schedule_with_warmup(
                         optimizers[-1]["optimizer"], 
                         num_warmup_steps = template_config.optimize.scheduler.num_warmup_steps, 
-                        num_training_steps = num_training_steps
+                        num_training_steps = self.num_training_steps
                     )
             else:
                 optimizer = Dummy()
@@ -188,7 +123,7 @@ class ClassificationRunner(pl.LightningModule):
                         optimizers[-1]["lr_scheduler"] = get_linear_schedule_with_warmup(
                             optimizers[-1]["optimizer"], 
                             num_warmup_steps = verbalizer_config.optimize.scheduler.num_warmup_steps, 
-                            num_training_steps = num_training_steps
+                            num_training_steps = self.num_training_steps
                         )
                 else:
                     optimizer = Dummy()
@@ -202,11 +137,11 @@ class ClassificationRunner(pl.LightningModule):
     
     def validation_step(self, batch, batch_idx):
         label = batch['label']
-        logits = self.prompt_model(batch)
+        logits = self.model(batch)
         pred = torch.argmax(logits, dim=-1)
         return pred.cpu().tolist(), label.cpu().tolist()
 
-    def validation_epoch_end(self, val_step_outputs):
+    def validation_epoch_end(self, val_step_outputs, log_name="val_metric"):
         preds = []
         labels = []
         for pred, label in  val_step_outputs:
@@ -217,12 +152,18 @@ class ClassificationRunner(pl.LightningModule):
         for metric in self.config.classification.metric:
             score = classification_metrics(preds, labels, metric)
             scores[metric] = score
-        self.log("val_metric", scores) # TODO use which metric
+        self.log(log_name, scores["micro-f1"]) # TODO use which metric (use shell to eval instead?)
+
+    def test_step(self, batch, batch_idx):
+        return self.validation_step(batch, batch_idx)
+    
+    def test_epoch_end(self, test_step_outputs):
+        self.validation_epoch_end(test_step_outputs, log_name="test_metric")
 
     def training_step(self, batch, batch_idx):
-        logits = self.prompt_model(batch)
+        logits = self.model(batch)
         loss = self.loss_function(logits, batch['label'])
-        self.log("train_loss", loss, on_step = True, prog_bar = True, logger = True)
+        return loss
 
 
     def on_fit_start(self): # TODO how to run model that outside step
@@ -232,8 +173,8 @@ class ClassificationRunner(pl.LightningModule):
 
     #     verbalizer_config = self.config[self.config.verbalizer]
     #     template_config = self.config[self.config.template]
-    #     if not hasattr(self.inner_model.verbalizer, "optimize_to_initialize" ) and \
-    #         not hasattr(self.inner_model.template, "optimize_to_initialize" ):
+    #     if not hasattr(self.model.verbalizer, "optimize_to_initialize" ) and \
+    #         not hasattr(self.model.template, "optimize_to_initialize" ):
     #         return None
     #     if hasattr(verbalizer_config, "init_using_split"):
     #         using_split = verbalizer_config.init_using_split
@@ -251,12 +192,12 @@ class ClassificationRunner(pl.LightningModule):
 
     #     with torch.no_grad():
     #         for batch in tqdm(dataloader, desc="Init_using_{}".format(using_split)):
-    #             batch = batch.to("cuda:{}".format(self.config.environment.local_rank)).to_dict()
-    #             logits = self.prompt_model(batch)
-    #         if hasattr(self.inner_model.verbalizer, "optimize_to_initialize" ):
-    #             self.inner_model.verbalizer.optimize_to_initialize()
-    #         if hasattr(self.inner_model.template, "optimize_to_initialize" ):
-    #             self.inner_model.template.optimize_to_initialize()
+    #             batch = batch.to(self.device).to_dict()
+    #             logits = self.model(batch)
+    #         if hasattr(self.model.verbalizer, "optimize_to_initialize" ):
+    #             self.model.verbalizer.optimize_to_initialize()
+    #         if hasattr(self.model.template, "optimize_to_initialize" ):
+    #             self.model.template.optimize_to_initialize()
 
 
 class GenerationRunner(ClassificationRunner): # TODO

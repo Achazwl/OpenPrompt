@@ -148,19 +148,24 @@ class PromptModel(nn.Module):
     with OpenPrompt, these modules could be flexibly combined. And this class is the base class of ``PromptForClassification`` and ``PromptForGeneration``
 
     Args:
-        model (:obj:`PreTrainedModel`): The pre-trained language model for the current prompt-learning task.
+        plm (:obj:`PreTrainedModel`): The pre-trained language model for the current prompt-learning task.
         template (:obj:`Template`): The ``Template`` object to warp the input data.
     '''
     def __init__(self,
-                 model: PreTrainedModel, 
+                 plm: PreTrainedModel, 
                  template: Template,
-                 ):
+                 freeze_plm: bool = False
+                ):
         super().__init__()
-        self.model = model
+        self.plm = plm
         self.template = template
+        self.freeze_plm =freeze_plm
+        if freeze_plm:
+            for param in self.plm.parameters():
+                param.requires_grad = False
 
         # get model's forward function's keywords
-        self.forward_keys = signature(self.model.forward).args
+        self.forward_keys = signature(self.plm.forward).args
         
     def forward(self, batch: Union[Dict, InputFeatures]) -> torch.Tensor:
         r""" 
@@ -172,7 +177,7 @@ class PromptModel(nn.Module):
         """
         batch = self.template.process_batch(batch)
         input_batch = {key: batch[key] for key in batch if key in self.forward_keys}
-        outputs =  self.model(**input_batch)
+        outputs =  self.plm(**input_batch)
         return outputs
     
     def prepare_model_inputs(self, batch: Union[Dict, InputFeatures]) -> Dict:
@@ -182,7 +187,31 @@ class PromptModel(nn.Module):
         input_batch = {key: batch[key] for key in batch if key in self.forward_keys}
         return input_batch
 
+    def state_dict(self, destination=None, prefix='', keep_vars=False):
+        r""" Save the model using template and verbalizer's save methods.
+        Args:
+            path (:obj:`str`): the full path of the checkpoint.
+            save_plm (:obj:`bool`): whether saving the pretrained language model.
+            kwargs: other information, such as the achieved metric value. 
+        """
+        if destination is None:
+            destination = OrderedDict()
+            destination._metadata = OrderedDict()
+        destination._metadata[prefix[:-1]] = local_metadata = dict(version=self._version)
+        self._save_to_state_dict(destination, prefix, keep_vars)
+        for name, module in self._modules.items():
+            if module is not None:
+                if name == 'plm' and self.freeze_plm:
+                    continue
+                module.state_dict(destination, prefix + name + '.', keep_vars=keep_vars)
+        for hook in self._state_dict_hooks.values():
+            hook_result = hook(self, destination, prefix, local_metadata)
+            if hook_result is not None:
+                destination = hook_result
+        return destination
     
+    def load_state_dict(self, state_dict, strict):
+        return super().load_state_dict(state_dict, strict=False)
 
 
 class PromptForClassification(nn.Module):
@@ -191,28 +220,28 @@ class PromptForClassification(nn.Module):
     logits of the labels, using a verbalizer. 
 
     Args:
-        model (:obj:`PretrainedModel`): A pre-traiend model you decide to use for classification, e.g. BERT.
+        plm (:obj:`PretrainedModel`): A pre-traiend model you decide to use for classification, e.g. BERT.
         template (:obj:`Template`): A ``Template`` object you use to wrap the input text for classification, e.g. ``ManualTemplate``.
         verbalizer (:obj:`Verbalizer`): A ``Verbalizer`` object you use to project the lables to label words for classification, e.g. ``ManualVerbalizer``.
+        freeze_plm (:obj:`bool`): Whether to freeze the plm parameters.
     '''
     def __init__(self,
-                 model: PreTrainedModel, 
+                 plm: PreTrainedModel, 
                  template: Template,
                  verbalizer: Verbalizer,
+                 freeze_plm: Optional[bool] = False,
                  ):
         super().__init__()
-        self.model = model
-        self.template = template
-        self.prompt_model = PromptModel(model, template)
+        self.prompt_model = PromptModel(plm, template, freeze_plm)
         self.verbalizer = verbalizer
 
-
     @property
-    def device(self,):
-        r"""
-        Register the device parameter.
-        """
-        return self.model.device
+    def plm(self):
+        return self.prompt_model.plm
+    
+    @property
+    def template(self):
+        return self.prompt_model.template
 
     def extract_logits(self,
                        logits: torch.Tensor,
@@ -264,29 +293,6 @@ class PromptForClassification(nn.Module):
         '''
         return self.verbalizer.tokenizer
     
-    def state_dict(self):
-        r""" Save the model using template and verbalizer's save methods.
-        Args:
-            path (:obj:`str`): the full path of the checkpoint.
-            save_plm (:obj:`bool`): whether saving the pretrained language model.
-            kwargs: other information, such as the achieved metric value. 
-        """
-        _state_dict = {}
-        _state_dict['plm'] = self.model.state_dict()
-        _state_dict['template'] = self.template.state_dict()
-        _state_dict['verbalizer'] = self.verbalizer.state_dict()
-        return _state_dict
-    
-    def load_state_dict(self, state_dict):
-        if 'plm' in state_dict:
-            self.model.load_state_dict(state_dict['plm'])
-        self.template.load_state_dict(state_dict['template'])
-        self.verbalizer.load_state_dict(state_dict['verbalizer'])
-
-
-
-
-
 
 class PromptForGeneration(nn.Module, GenerationMixin):
     r'''``PromptModel`` with generation loss caculation and generation utils integrated.
@@ -300,31 +306,34 @@ class PromptForGeneration(nn.Module, GenerationMixin):
     '''
 
     def __init__(self,
-                 model: PreTrainedModel, 
+                 plm: PreTrainedModel, 
                  template: Template,
                  gen_config: CfgNode,
                  tokenizer: Optional[PreTrainedTokenizer] = None,
+                 freeze_plm: bool = False,
                 ):
                  
         super().__init__()
-        self.model = model
-        self.template = template
         if tokenizer is None:
-            assert self.template.tokenizer is not None, "Tokenizer can't be set from input args or template"
+            assert template.tokenizer is not None, "Tokenizer can't be set from input args or template"
             self.tokenizer = template.tokenizer
         else:
             self.tokenizer = tokenizer
-        self.prompt_model = PromptModel(model, template)
+        self.prompt_model = PromptModel(plm, template, freeze_plm)
 
         self.loss_fct = nn.CrossEntropyLoss(reduction='none')
-        self.config = model.config
+        self.config = plm.config
         for key in gen_config:
             setattr(self.config, key, gen_config[key])
         self.in_generation_function = False
 
     @property
-    def device(self):
-        return self.model.device
+    def plm(self):
+        return self.prompt_model.plm
+    
+    @property
+    def template(self):
+        return self.prompt_model.template
 
     def shift_logits_and_labels(self, 
                                 logits, 
@@ -363,7 +372,7 @@ class PromptForGeneration(nn.Module, GenerationMixin):
         in which the loss will be calcated for all the postions in the same time. 
         """
         if self.in_generation_function:
-            return self.prompt_model.model.forward(*args, **kwargs)
+            return self.prompt_model.plm.forward(*args, **kwargs)
         else:
             return self._forward(*args, **kwargs)
 
@@ -461,7 +470,7 @@ class PromptForGeneration(nn.Module, GenerationMixin):
             batch = InputFeatures(input_ids=input_ids, **model_kwargs)
             model_inputs = self.prompt_model.prepare_model_inputs(batch)
         else: # generating the subsequence generation can use the default setting
-            model_inputs = self.prompt_model.model.prepare_inputs_for_generation(input_ids, **model_kwargs)
+            model_inputs = self.prompt_model.plm.prepare_inputs_for_generation(input_ids, **model_kwargs)
         self.last_model_inputs = model_inputs  # to update the model_kwargs in _update_model_kwargs_for_generation, in-place operation.
         return model_inputs
     
@@ -497,7 +506,7 @@ class PromptForGeneration(nn.Module, GenerationMixin):
     ) -> Dict[str, Any]:
         if "encoder_outputs" not in model_kwargs:
             # retrieve encoder hidden states
-            encoder = self.prompt_model.model.get_encoder()
+            encoder = self.prompt_model.plm.get_encoder()
             encoder_kwargs = {
                 argument: value
                 for argument, value in model_kwargs.items()
@@ -508,24 +517,7 @@ class PromptForGeneration(nn.Module, GenerationMixin):
             model_kwargs["encoder_outputs"] = encoder(return_dict=True, **model_inputs)
         return model_kwargs
     
-    def state_dict(self):
-        r""" Save the model using template and verbalizer's save methods.
-        Args:
-            path (:obj:`str`): the full path of the checkpoint.
-            save_plm (:obj:`bool`): whether saving the pretrained language model.
-            kwargs: other information, such as the achieved metric value. 
-        """
-        _state_dict = {}
-        _state_dict['plm'] = self.model.state_dict()
-        _state_dict['template'] = self.template.state_dict()
-        return _state_dict
-    
-    def load_state_dict(self, state_dict):
-        if 'plm' in state_dict:
-            self.model.load_state_dict(state_dict['plm'])
-        self.template.load_state_dict(state_dict['template'])
-    
     def _reorder_cache(self, past, beam_idx):
         r"""Use the plm's default _reorder_cache function
         """
-        return self.model._reorder_cache(past, beam_idx)
+        return self.plm._reorder_cache(past, beam_idx)
