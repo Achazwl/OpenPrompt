@@ -4,7 +4,8 @@ sys.path.append(".")
 
 import argparse
 
-from pytorch_lightning import seed_everything
+from packaging import version
+import pytorch_lightning as pl
 from pytorch_lightning import Trainer as PLTrainer
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
@@ -25,9 +26,9 @@ from openprompt.utils.utils import check_config_conflicts
 def get_config():
     parser = argparse.ArgumentParser("classification config")
     parser.add_argument("--config_yaml", type=str, help='the configuration file for this experiment.')
-    parser.add_argument("--resume", type=str, help='a specified checkpoint path to resume training, usually last.ckpt\
+    parser.add_argument("--resume", type=str, help='a specified logging path to resume training.\
            It will fall back to run from initialization if no lastest checkpoint are found.')
-    parser.add_argument("--test", type=str, help='a specified checkpoint path to test.')
+    parser.add_argument("--test", type=str, help='a specified logging path to test')
     args = parser.parse_args()
     config = get_yaml_config(args.config_yaml)
     check_config_conflicts(config)
@@ -36,16 +37,16 @@ def get_config():
 
 
 def build_dataloader(dataset, template, tokenizer, config, split):
-    dataloader = PromptDataLoader(dataset=dataset, 
-                                template=template, 
-                                tokenizer=tokenizer, 
-                                batch_size=config[split].batch_size,
-                                shuffle=config[split].shuffle_data,
-                                teacher_forcing=config[split].teacher_forcing \
-                                    if hasattr(config[split],'teacher_forcing') else None,
-                                predict_eos_token=True if config.task=="generation" else False,
-                                **config.dataloader
-                                )
+    dataloader = PromptDataLoader(
+        dataset = dataset, 
+        template = template, 
+        tokenizer = tokenizer, 
+        batch_size = config[split].batch_size,
+        shuffle = config[split].shuffle_data,
+        teacher_forcing = config[split].teacher_forcing if hasattr(config[split],'teacher_forcing') else None,
+        predict_eos_token = True if config.task == "generation" else False,
+        **config.dataloader
+    )
     return dataloader
 
 def save_config_to_yaml(config):
@@ -60,23 +61,84 @@ def main():
     config, args = get_config()
     # init logger, create log dir and set log level, etc.
     if args.resume and args.test:
-        raise ValueError("Cannot set --resume and --test arguments at the same time. ")
-    elif args.resume or args.test:
-        EXP_PATH = args.resume or args.test
-        config.logging.path = None # TODO
+        raise Exception("cannot use flag --resume and --test together")
+    if args.resume or args.test:
+        config.logging.path = EXP_PATH = args.resume or args.test
     else:
         EXP_PATH = config_experiment_dir(config)
-    
-    init_logger(EXP_PATH+"/log.txt", config.logging.file_level, config.logging.console_level)
-    # save config to the logger directory
-    if not args.resume:
+        init_logger(os.path.join(EXP_PATH, "log.txt"), config.logging.file_level, config.logging.console_level)
+        # save config to the logger directory
         save_config_to_yaml(config)
+
+    # load dataset. The valid_dataset can be None
+    train_dataset, valid_dataset, test_dataset, Processor = load_dataset(config, test = args.test is not None or config.learning_setting == 'zero_shot')
+
+    if config.learning_setting == 'full':
+        res = trainer(
+            EXP_PATH,
+            config,
+            Processor,
+            resume = args.resume,
+            test = args.test,
+            train_dataset = train_dataset,
+            valid_dataset = valid_dataset,
+            test_dataset = test_dataset,
+        )
+    elif config.learning_setting == 'few_shot':
+        if config.few_shot.few_shot_sampling is None:
+            raise ValueError("use few_shot setting but config.few_shot.few_shot_sampling is not specified")
+        seeds = [config.sampling_from_train.seed] # TODO change yaml seed to list of seed and remove the '[' and ']' in this line
+        res = 0
+        for seed in seeds:
+            if not args.test:
+                sampler = FewShotSampler(
+                    num_examples_per_label = config.sampling_from_train.num_examples_per_label,
+                    also_sample_dev = config.sampling_from_train.also_sample_dev,
+                    num_examples_per_label_dev = config.sampling_from_train.num_examples_per_label_dev
+                )
+                train_sampled_dataset, valid_sampled_dataset = sampler(
+                    train_dataset = train_dataset,
+                    valid_dataset = valid_dataset,
+                    seed = seed
+                )
+                result = trainer(
+                    os.path.join(EXP_PATH, f"seed-{seed}"),
+                    config,
+                    Processor,
+                    resume = args.resume,
+                    test = args.test,
+                    train_dataset = train_sampled_dataset,
+                    valid_dataset = valid_sampled_dataset,
+                    test_dataset = test_dataset,
+                )
+            else:
+                result = trainer(
+                    os.path.join(EXP_PATH, f"seed-{seed}"),
+                    config,
+                    Processor,
+                    test = args.test,
+                    test_dataset = test_dataset,
+                )
+            res += result
+        res /= len(seeds)
+    elif config.learning_setting == 'zero_shot':
+        res = trainer(
+            EXP_PATH,
+            config,
+            Processor,
+            zero = True,
+            train_dataset = train_dataset,
+            valid_dataset = valid_dataset,
+            test_dataset = test_dataset,
+        )
+    print("metric:", res) # TODO metric which
+
+def trainer(EXP_PATH, config, Processor, train_dataset = None, valid_dataset = None, test_dataset = None, resume = None, test = None, zero = False):
     # set seed
-    seed_everything(config.reproduce.seed, workers=True)
+    pl.seed_everything(config.reproduce.seed, workers = True) # TODO remove redundant seed args in yaml, use seed_everything for random, numpy.random, torch.cuda etc.
+
     # load the pretrained models, its model, tokenizer, and config.
     plm_model, plm_tokenizer, plm_config = load_plm(config)
-    # load dataset. The valid_dataset can be None
-    train_dataset, valid_dataset, test_dataset, Processor = load_dataset(config) # TODO For effeciecy, load dataset needed only.
     
     if config.task == "classification":
         # define prompt
@@ -90,35 +152,22 @@ def main():
     else:
         raise NotImplementedError(f"config.task {config.task} is not implemented yet. Only classification and generation are supported.")
 
-    # process data and get data_loader
-    if config.learning_setting == 'full':
-        pass
-    elif config.learning_setting == 'few_shot': # TODO make seed a list, run multiple times, get mean performance
-        if config.few_shot.few_shot_sampling is not None:
-            sampler = FewShotSampler(
-                num_examples_per_label = config.sampling_from_train.num_examples_per_label,
-                also_sample_dev = config.sampling_from_train.also_sample_dev,
-                num_examples_per_label_dev = config.sampling_from_train.num_examples_per_label_dev
-            )
-            train_dataset, valid_dataset = sampler(
-                train_dataset = train_dataset,
-                valid_dataset = valid_dataset,
-                seed = config.sampling_from_train.seed
-            )
-    elif config.learning_setting == 'zero_shot':
-        pass # TODO without training
-    
-    train_dataloader = build_dataloader(train_dataset, template, plm_tokenizer, config, "train") # TODO batch size should be per_gpu batch_size
-    valid_dataloader = build_dataloader(valid_dataset, template, plm_tokenizer, config, "dev")
-    test_dataloader = build_dataloader(test_dataset, template, plm_tokenizer, config, "test")
-
     if config.task == "classification":
         model = ClassificationRunner(prompt_model, config)
     elif config.task == "generation":
         model = GenerationRunner(prompt_model, config)
 
+    # TODO batch_size in yaml should be per_gpu_batch_size (just change the name, don't change other code)
+    # process data and get data_loader
+    if train_dataset:
+        train_dataloader = build_dataloader(train_dataset, template, plm_tokenizer, config, "train")
+    if valid_dataset:
+        valid_dataloader = build_dataloader(valid_dataset, template, plm_tokenizer, config, "dev")
+    if test_dataset:
+        test_dataloader = build_dataloader(test_dataset, template, plm_tokenizer, config, "test")
+
     trainer = PLTrainer(
-        gpus = config.environment.num_gpus,
+        gpus = config.environment.num_gpus, # remove CUDA_VISIBLE_DEVICES in config yaml, user should set manually in terminal but not change the yaml frequently
 
         max_epochs = config.train.num_epochs,
         accumulate_grad_batches = config.train.gradient_accumulation_steps,
@@ -126,18 +175,19 @@ def main():
         gradient_clip_algorithm = "norm",
         gradient_clip_val = config.train.max_grad_norm,
 
-        resume_from_checkpoint = args.resume, # TODO ckpt path
+        resume_from_checkpoint = os.path.join(os.path.join(resume or test, "checkpoints"), "last.ckpt") if resume or test else None,
 
-        # enable_checkpointing = True, # TODO lightning version
+        # TODO add save checkpoint or not in config yaml
+        **({"checkpoint_callback": True} if version.parse(pl.__version__[:3]) < version.parse("1.5") else {"enable_checkpointing": True}),
         callbacks = [
             ModelCheckpoint(
-                monitor = "val_metric", # TODO
+                monitor = "val_metric",
                 save_top_k = 1,
                 save_last = True,
                 mode = "max",
 
-                dirpath = EXP_PATH + "/checkpoints",
-                filename = "{epoch:02d}-{val_metric:.2f}", # TODO
+                dirpath = os.path.join(EXP_PATH, "checkpoints"),
+                filename = "{epoch:02d}-{val_metric:.2f}",
             ),
         ],
 
@@ -150,12 +200,19 @@ def main():
 
         deterministic = True,
     )
+    # TODO erase hsd in yaml file
 
-    if args.test:
-        trainer.test(dataloaders = test_dataloader, ckpt_path = args.test) # TODO ckpt_path
+    if zero:
+        res = trainer.test(model, dataloaders = test_dataloader)
+    elif test: # TODO ask in discussion
+        path = trainer.checkpoint_callbacks[0].best_model_path
+        logger.info(f"testing: {path}")
+        model.load_from_checkpoint(path)
+        res = trainer.test(model, dataloaders = test_dataloader)
     else:
         trainer.fit(model, train_dataloaders = train_dataloader, val_dataloaders = valid_dataloader)
-        trainer.test(dataloaders = test_dataloader, ckpt_path = 'best')
+        res = trainer.test(dataloaders = test_dataloader, ckpt_path = 'best')
+    return res[0]['test_metric']['micro-f1'].detach() # TODO metric
 
 if __name__ == "__main__":
     main()

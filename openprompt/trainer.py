@@ -155,7 +155,7 @@ class ClassificationRunner(pl.LightningModule):
         pred = torch.argmax(logits, dim=-1)
         return pred.cpu().tolist(), label.cpu().tolist()
 
-    def validation_epoch_end(self, val_step_outputs, log_name="val_metric"):
+    def validation_epoch_end(self, val_step_outputs):
         preds = []
         labels = []
         for pred, label in val_step_outputs:
@@ -166,13 +166,26 @@ class ClassificationRunner(pl.LightningModule):
         for metric in self.config.classification.metric:
             score = classification_metrics(preds, labels, metric)
             scores[metric] = score
-        self.log(log_name, scores["micro-f1"]) # TODO use which metric (use shell to eval instead?)
+        self.log("val_metric", scores[self.config.classification.metric[0]]) # TODO metric (use which?)
 
     def test_step(self, batch, batch_idx):
-        return self.validation_step(batch, batch_idx)
+        label = batch['label']
+        logits = self.model(batch)
+        pred = torch.argmax(logits, dim=-1)
+        return pred.cpu().tolist(), label.cpu().tolist()
     
     def test_epoch_end(self, test_step_outputs):
-        self.validation_epoch_end(test_step_outputs, log_name="test_metric")
+        preds = []
+        labels = []
+        for pred, label in test_step_outputs:
+            preds.extend(pred)
+            labels.extend(label)
+        
+        scores = OrderedDict()
+        for metric in self.config.classification.metric:
+            score = classification_metrics(preds, labels, metric)
+            scores[metric] = score
+        self.log("test_metric", scores)
 
     def training_step(self, batch, batch_idx):
         logits = self.model(batch)
@@ -182,37 +195,36 @@ class ClassificationRunner(pl.LightningModule):
 
 
     def on_fit_start(self): # TODO how to run model that outside step
-        pass
-    #     if self.config.calibrate is not None:
-    #         calibrate(self.model, self.config)
+        if self.config.calibrate is not None:
+            calibrate(self.model, self.config)
 
-    #     verbalizer_config = self.config[self.config.verbalizer]
-    #     template_config = self.config[self.config.template]
-    #     if not hasattr(self.model.verbalizer, "optimize_to_initialize" ) and \
-    #         not hasattr(self.model.template, "optimize_to_initialize" ):
-    #         return None
-    #     if hasattr(verbalizer_config, "init_using_split"):
-    #         using_split = verbalizer_config.init_using_split
-    #     elif hasattr(template_config, "init_using_split"):
-    #         using_split = template_config.init_using_split
-    #     else:
-    #         using_split = "valid"
+        verbalizer_config = self.config[self.config.verbalizer]
+        template_config = self.config[self.config.template]
+        if not hasattr(self.model.verbalizer, "optimize_to_initialize" ) and \
+            not hasattr(self.model.template, "optimize_to_initialize" ):
+            return None
+        if hasattr(verbalizer_config, "init_using_split"):
+            using_split = verbalizer_config.init_using_split
+        elif hasattr(template_config, "init_using_split"):
+            using_split = template_config.init_using_split
+        else:
+            using_split = "valid"
 
-    #     if using_split == "train":
-    #         dataloader = self.train_dataloader
-    #     elif using_split == "valid":
-    #         dataloader = self.valid_dataloader
-    #     else:
-    #         raise NotImplementedError
+        if using_split == "train":
+            dataloader = self.train_dataloader()
+        elif using_split == "valid":
+            dataloader = self.val_dataloader()
+        else:
+            raise NotImplementedError
 
-    #     with torch.no_grad():
-    #         for batch in tqdm(dataloader, desc="Init_using_{}".format(using_split)):
-    #             batch = batch.to(self.device).to_dict()
-    #             logits = self.model(batch)
-    #         if hasattr(self.model.verbalizer, "optimize_to_initialize" ):
-    #             self.model.verbalizer.optimize_to_initialize()
-    #         if hasattr(self.model.template, "optimize_to_initialize" ):
-    #             self.model.template.optimize_to_initialize()
+        with torch.no_grad():
+            for batch in tqdm(dataloader, desc="Init_using_{}".format(using_split)):
+                batch = batch.to(self.device).to_dict()
+                logits = self.model(batch)
+            if hasattr(self.model.verbalizer, "optimize_to_initialize" ):
+                self.model.verbalizer.optimize_to_initialize()
+            if hasattr(self.model.template, "optimize_to_initialize" ):
+                self.model.template.optimize_to_initialize()
 
 
 class GenerationRunner(ClassificationRunner): # TODO

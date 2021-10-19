@@ -4,7 +4,7 @@ dataset:
 
 plm:
   model_name: bert
-  model_path: /home/hushengding/plm_cache/bert-large-cased
+  model_path: bert-large-cased
   optimize:
     freeze_para: False
     lr: 0.00003
