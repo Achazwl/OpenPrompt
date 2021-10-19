@@ -4,13 +4,13 @@ sys.path.append(".")
 
 import argparse
 
+from pytorch_lightning import seed_everything
 from pytorch_lightning import Trainer as PLTrainer
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
 from openprompt.trainer import ClassificationRunner, GenerationRunner
 
 from openprompt.pipeline_base import PromptForClassification, PromptForGeneration
-from openprompt.utils.reproduciblity import set_seed
 from openprompt import PromptDataLoader
 from openprompt.prompts import load_template, load_verbalizer
 from openprompt.data_utils import FewShotSampler
@@ -72,7 +72,7 @@ def main():
     if not args.resume:
         save_config_to_yaml(config)
     # set seed
-    set_seed(config)
+    seed_everything(config.reproduce.seed, workers=True)
     # load the pretrained models, its model, tokenizer, and config.
     plm_model, plm_tokenizer, plm_config = load_plm(config)
     # load dataset. The valid_dataset can be None
@@ -145,6 +145,8 @@ def main():
             save_dir = EXP_PATH + "/logger",
             name = "",
         ),
+
+        deterministic = True,
     )
 
     if args.test:

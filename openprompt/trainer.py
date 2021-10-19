@@ -68,8 +68,8 @@ class ClassificationRunner(pl.LightningModule):
             no_decay = self.config.plm.optimize.no_decay
             weight_decay = self.config.plm.optimize.weight_decay
             optimizer_grouped_parameters = [
-                {'params': [p for n, p in self.model.prompt_model.named_parameters() if not any(nd in n for nd in no_decay)], 'weight_decay': weight_decay},
-                {'params': [p for n, p in self.model.prompt_model.named_parameters() if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
+                {'params': [p for n, p in self.model.plm.named_parameters() if not any(nd in n for nd in no_decay)], 'weight_decay': weight_decay},
+                {'params': [p for n, p in self.model.plm.named_parameters() if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
             ]
 
             optimizer = {}
