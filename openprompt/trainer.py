@@ -73,65 +73,79 @@ class ClassificationRunner(pl.LightningModule):
             ]
 
             optimizer = {}
-            optimizers.append({})
-            optimizers[-1]["optimizer"] = AdamW(
+            optimizer["optimizer"] = AdamW(
                 optimizer_grouped_parameters,
                 lr = self.config.plm.optimize.lr,
                 betas = self.config.plm.optimize.betas,
                 eps = self.config.plm.optimize.eps
             )
             if self.config.plm.optimize.scheduler is not None:
-                optimizers[-1]["lr_scheduler"] = get_linear_schedule_with_warmup(
-                    optimizers[-1]["optimizer"],
-                    num_warmup_steps = self.config.plm.optimize.scheduler.num_warmup_steps, 
-                    num_training_steps = self.num_training_steps
-                )
+                optimizer["lr_scheduler"] = {
+                    "scheduler": get_linear_schedule_with_warmup(
+                        optimizer["optimizer"],
+                        num_warmup_steps = self.config.plm.optimize.scheduler.num_warmup_steps, 
+                        num_training_steps = self.num_training_steps
+                    ),
+                    "interval": "step",
+                    "frequency": 1,
+                }
+            optimizers.append(optimizer)
 
         class Dummy:
             pass
 
         ## template_config 
         template_config = self.config[self.config.template]
-        if hasattr(template_config, "optimize") and template_config.optimize is not None:
-            optimizers.append({})
+        if hasattr(template_config, "optimize") and template_config.optimize is not None: # TODO should add optimize config in each yaml
+            optimizer = {}
             if not hasattr(self.model.template, "optimize"):
                 # using default gradient descent optimizer.
-                optimizers[-1]["optimizer"] = AdamW(self.model.template.parameters(), lr = template_config.optimize.lr)
+                optimizer["optimizer"] = AdamW(self.model.template.parameters(), lr = template_config.optimize.lr)
                 if hasattr(template_config.optimize, "scheduler") and template_config.optimize.scheduler is not None:
-                    optimizers[-1]["lr_scheduler"] = get_linear_schedule_with_warmup(
-                        optimizers[-1]["optimizer"], 
-                        num_warmup_steps = template_config.optimize.scheduler.num_warmup_steps, 
-                        num_training_steps = self.num_training_steps
-                    )
+                    optimizer["lr_scheduler"] = {
+                        "scheduler": get_linear_schedule_with_warmup(
+                            optimizer["optimizer"],
+                            num_warmup_steps = template_config.optimize.scheduler.num_warmup_steps, 
+                            num_training_steps = self.num_training_steps
+                        ),
+                        "interval": "step",
+                        "frequency": 1,
+                    }
             else:
-                optimizer = Dummy()
+                optimizer["optimizer"] = Dummy()
                 # resemble a pytorch optimizer for unified training.
-                setattr(self.template_optimizer, "step", self.model.template.optimize)
-                setattr(self.template_optimizer, "zero_grad", lambda:None)
+                setattr(optimizer["optimizer"], "step", self.model.template.optimize)
+                setattr(optimizer["optimizer"], "zero_grad", lambda:None)
 
-                optimizers[-1]["optimizer"] = optimizer
+                optimizer["optimizer"] = optimizer
+            optimizers.append(optimizer)
 
         if self.model.verbalizer:
             ## verbalizer_optimizer
             verbalizer_config = self.config[self.config.verbalizer]
-            if hasattr(verbalizer_config, "optimize") and verbalizer_config.optimize is not None:
-                optimizers.append({})
+            if hasattr(verbalizer_config, "optimize") and verbalizer_config.optimize is not None: # TODO should add verbalizer config in each yaml
+                optimizer = {}
                 if not hasattr(self.model.verbalizer, "optimize"):
                     # using default gradient descent optimizer.
-                    optimizers[-1]["optimizer"] = AdamW(self.model.verbalizer.parameters(), lr = verbalizer_config.optimize.lr)
+                    optimizer["optimizer"] = AdamW(self.model.verbalizer.parameters(), lr = verbalizer_config.optimize.lr)
                     if hasattr(verbalizer_config.optimize, "scheduler") and verbalizer_config.optimize.scheduler is not None:
-                        optimizers[-1]["lr_scheduler"] = get_linear_schedule_with_warmup(
-                            optimizers[-1]["optimizer"], 
-                            num_warmup_steps = verbalizer_config.optimize.scheduler.num_warmup_steps, 
-                            num_training_steps = self.num_training_steps
-                        )
+                        optimizer["lr_scheduler"] = {
+                            "scheduler": get_linear_schedule_with_warmup(
+                                optimizer["optimizer"],
+                                num_warmup_steps = verbalizer_config.optimize.scheduler.num_warmup_steps, 
+                                num_training_steps = self.num_training_steps
+                            ),
+                            "interval": "step",
+                            "frequency": 1,
+                        }
                 else:
-                    optimizer = Dummy()
+                    optimizer["optimizer"] = Dummy()
                     # resemble a pytorch optimizer for unified training.
-                    setattr(self.verbalizer_optimizer, "step", self.model.verbalizer.optimize)
-                    setattr(self.verbalizer_optimizer, "zero_grad", lambda:None)
+                    setattr(optimizer["optimizer"], "step", self.model.verbalizer.optimize)
+                    setattr(optimizer["optimizer"], "zero_grad", lambda:None)
 
-                    optimizers[-1]["optimizer"] = optimizer
+                    optimizer["optimizer"] = optimizer
+                optimizers.append(optimizer)
 
         return optimizers
     
@@ -144,7 +158,7 @@ class ClassificationRunner(pl.LightningModule):
     def validation_epoch_end(self, val_step_outputs, log_name="val_metric"):
         preds = []
         labels = []
-        for pred, label in  val_step_outputs:
+        for pred, label in val_step_outputs:
             preds.extend(pred)
             labels.extend(label)
         
@@ -163,6 +177,7 @@ class ClassificationRunner(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         logits = self.model(batch)
         loss = self.loss_function(logits, batch['label'])
+        self.log("trian_loss", loss)
         return loss
 
 

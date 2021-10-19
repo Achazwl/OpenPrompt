@@ -144,7 +144,9 @@ def main():
         logger = TensorBoardLogger(
             save_dir = EXP_PATH + "/logger",
             name = "",
+            default_hp_metric = False,
         ),
+        log_every_n_steps = 1,
 
         deterministic = True,
     )

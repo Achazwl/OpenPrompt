@@ -187,31 +187,31 @@ class PromptModel(nn.Module):
         input_batch = {key: batch[key] for key in batch if key in self.forward_keys}
         return input_batch
 
-    def state_dict(self, destination=None, prefix='', keep_vars=False):
-        r""" Save the model using template and verbalizer's save methods.
-        Args:
-            path (:obj:`str`): the full path of the checkpoint.
-            save_plm (:obj:`bool`): whether saving the pretrained language model.
-            kwargs: other information, such as the achieved metric value. 
-        """
-        if destination is None:
-            destination = OrderedDict()
-            destination._metadata = OrderedDict()
-        destination._metadata[prefix[:-1]] = local_metadata = dict(version=self._version)
-        self._save_to_state_dict(destination, prefix, keep_vars)
-        for name, module in self._modules.items():
-            if module is not None:
-                if name == 'plm' and self.freeze_plm:
-                    continue
-                module.state_dict(destination, prefix + name + '.', keep_vars=keep_vars)
-        for hook in self._state_dict_hooks.values():
-            hook_result = hook(self, destination, prefix, local_metadata)
-            if hook_result is not None:
-                destination = hook_result
-        return destination
+    # def state_dict(self, destination=None, prefix='', keep_vars=False):
+    #     r""" Save the model using template and verbalizer's save methods.
+    #     Args:
+    #         path (:obj:`str`): the full path of the checkpoint.
+    #         save_plm (:obj:`bool`): whether saving the pretrained language model.
+    #         kwargs: other information, such as the achieved metric value. 
+    #     """
+    #     if destination is None:
+    #         destination = OrderedDict()
+    #         destination._metadata = OrderedDict()
+    #     destination._metadata[prefix[:-1]] = local_metadata = dict(version=self._version)
+    #     self._save_to_state_dict(destination, prefix, keep_vars)
+    #     for name, module in self._modules.items():
+    #         if module is not None:
+    #             if name == 'plm' and self.freeze_plm:
+    #                 continue
+    #             module.state_dict(destination, prefix + name + '.', keep_vars=keep_vars)
+    #     for hook in self._state_dict_hooks.values():
+    #         hook_result = hook(self, destination, prefix, local_metadata)
+    #         if hook_result is not None:
+    #             destination = hook_result
+    #     return destination
     
-    def load_state_dict(self, state_dict, strict):
-        return super().load_state_dict(state_dict, strict=False)
+    # def load_state_dict(self, state_dict, strict):
+    #     return super().load_state_dict(state_dict, strict=False)
 
 
 class PromptForClassification(nn.Module):
