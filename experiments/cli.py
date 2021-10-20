@@ -212,7 +212,7 @@ def trainer(EXP_PATH, config, Processor, train_dataset = None, valid_dataset = N
     else:
         trainer.fit(model, train_dataloaders = train_dataloader, val_dataloaders = valid_dataloader)
         res = trainer.test(dataloaders = test_dataloader, ckpt_path = 'best')
-    return res[0]['test_metric']['micro-f1'].detach() # TODO metric
+    return res[0]['test_metric']['micro-f1'].detach() # TODO metric which
 
 if __name__ == "__main__":
     main()

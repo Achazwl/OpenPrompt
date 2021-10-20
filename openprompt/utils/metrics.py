@@ -18,7 +18,7 @@ def classification_metrics(preds: Sequence[int],
     """
     
     if metric == "micro-f1":
-        score = f1_score(labels, preds, average='micro')
+        score = f1_score(labels, preds, average='micro', labels=range(1,42+1))
     elif metric == "macro-f1":
         score = f1_score(labels, preds, average='macro')
     elif metric == "accuracy":

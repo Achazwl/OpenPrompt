@@ -1,5 +1,8 @@
 
-from typing import OrderedDict
+try:
+    from typing import OrderedDict
+except ImportError:
+    from collections import OrderedDict
 from yacs.config import CfgNode, _merge_a_into_b
 import os
 from collections import defaultdict

@@ -5,7 +5,11 @@ sys.path.append(".")
 from torch.utils.data import dataloader
 
 import pytorch_lightning as pl
-from typing import Callable, OrderedDict, Union
+from typing import Callable, Union
+try:
+    from typing import OrderedDict
+except ImportError:
+    from collections import OrderedDict
 from openprompt.pipeline_base import PromptForClassification, PromptForGeneration
 from tqdm import tqdm
 import torch
@@ -14,27 +18,22 @@ from openprompt.utils.metrics import classification_metrics, generation_metric
 from transformers import  AdamW, get_linear_schedule_with_warmup
 from openprompt.utils.calibrate import calibrate
 
-class ClassificationRunner(pl.LightningModule):
-    def __init__(self, 
-                 model: PromptForClassification,
+class BasicRunner(pl.LightningModule):
+    r"""The base class of All Runner
+    common functions in Runners are defined in BasicRunner
+
+    Args:
+        prompt_model (:obj:`nn.Module`): the model to train
+        config (:obj:`CfgNode`): A configuration object.
+    """
+
+    def __init__(self,
+                 model: torch.nn.Module,
                  config: CfgNode = None,
-                 loss_function: Optional[Callable] = None,
                 ):
         super().__init__()
-
         self.model = model
         self.config = config
-        self.loss_function = loss_function if loss_function else self.config_loss_function()
-    
-    def config_loss_function(self, ):
-        r"""config the loss function if it's not passed.
-        """
-        if self.config.classification.loss_function == "cross_entropy":
-            return torch.nn.CrossEntropyLoss()
-        elif self.config.classification.loss_function == "nll_loss":
-            return torch.nn.NLLLoss()
-        else:
-            raise NotImplementedError
 
     @property
     def num_training_steps(self) -> int:
@@ -56,10 +55,17 @@ class ClassificationRunner(pl.LightningModule):
 
     @property
     def steps_per_epoch(self) -> int:
+        """num of training steps per epoch"""
         return self.num_training_steps // self.trainer.max_epochs
     
     def configure_optimizers(self):
-        r"""config the optimizer and scheduler for 1. model 2. template 3. verbalizer
+        r"""config the optimizer and scheduler for
+        
+        1. model
+        
+        2. template
+        
+        3. verbalizer(optional)
         """
         
         optimizers = []
@@ -120,7 +126,7 @@ class ClassificationRunner(pl.LightningModule):
                 optimizer["optimizer"] = optimizer
             optimizers.append(optimizer)
 
-        if self.model.verbalizer:
+        if hasattr(self.model, "verbalizer") and self.model.verbalizer:
             ## verbalizer_optimizer
             verbalizer_config = self.config[self.config.verbalizer]
             if hasattr(verbalizer_config, "optimize") and verbalizer_config.optimize is not None: # TODO should add verbalizer config in each yaml
@@ -148,7 +154,62 @@ class ClassificationRunner(pl.LightningModule):
                 optimizers.append(optimizer)
 
         return optimizers
+
+    def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_idx, *args, **kwargs):
+        if optimizer_idx == 0:
+            for idx, opt in enumerate(self.optimizers()):
+                super().optimizer_step(epoch, batch_idx, opt, idx, *args, **kwargs)
+
+    def save_results(self, preds, tgts, split):
+        ret_file_name = os.path.join(self.config.logging.path, f"{split}_preds.txt")
+        with open(ret_file_name, 'w') as fout:
+            for i in range(len(preds)):
+                print(preds[i], file = fout)
+        ret_file_name = os.path.join(self.config.logging.path, f"{split}_tgts.txt")
+        with open(ret_file_name, 'w') as fout:
+            for i in range(len(preds)):
+                print(tgts[i], file = fout)
+
+    def optimizers(self, use_pl_optimizer=False):
+        opts = super().optimizers(use_pl_optimizer)
+        return opts if isinstance(opts, list) else [opts]
+
+    def lr_schedulers(self):
+        schedulers = super().lr_schedulers()
+        return schedulers if isinstance(schedulers, list) else [schedulers]
+
+
+class ClassificationRunner(BasicRunner):
+    r"""A runner for simple training without training tricks.
+    Applying training tricks such as ensemble of template or verbalizer, 
+    or self-training can use other runner class. 
+    This class is specially implemented for classification.
+    For generation task, though it can be integrated in this class
+    via `task` option, we keep it as another class for simplicity.
+
+    Args:
+        prompt_model (:obj:`PromptForClassification`): One ``PromptModel`` object.
+        config (:obj:`CfgNode`): A configuration object.
+        loss_function (:obj:`Callable`, optional): The loss function in the training process.
+    """
+    def __init__(self, 
+                 model: PromptForClassification,
+                 config: CfgNode = None,
+                 loss_function: Optional[Callable] = None,
+                ):
+        super().__init__(model, config)
+        self.loss_function = loss_function if loss_function else self.config_loss_function()
     
+    def config_loss_function(self, ):
+        r"""config the loss function if it's not passed.
+        """
+        if self.config.classification.loss_function == "cross_entropy":
+            return torch.nn.CrossEntropyLoss()
+        elif self.config.classification.loss_function == "nll_loss":
+            return torch.nn.NLLLoss()
+        else:
+            raise NotImplementedError
+
     def validation_step(self, batch, batch_idx):
         label = batch['label']
         logits = self.model(batch)
@@ -161,6 +222,8 @@ class ClassificationRunner(pl.LightningModule):
         for pred, label in val_step_outputs:
             preds.extend(pred)
             labels.extend(label)
+
+        self.save_results(preds, labels, split='val')
         
         scores = OrderedDict()
         for metric in self.config.classification.metric:
@@ -180,6 +243,8 @@ class ClassificationRunner(pl.LightningModule):
         for pred, label in test_step_outputs:
             preds.extend(pred)
             labels.extend(label)
+
+        self.save_results(preds, labels, split='test')
         
         scores = OrderedDict()
         for metric in self.config.classification.metric:
@@ -187,11 +252,14 @@ class ClassificationRunner(pl.LightningModule):
             scores[metric] = score
         self.log("test_metric", scores)
 
-    def training_step(self, batch, batch_idx):
-        logits = self.model(batch)
-        loss = self.loss_function(logits, batch['label'])
-        self.log("trian_loss", loss)
-        return loss
+    def training_step(self, batch, batch_idx, *args):
+        print(batch_idx, args[0])
+        return None
+        if len(args) == 0 or args[0] == 0:
+            logits = self.model(batch)
+            loss = self.loss_function(logits, batch['label'])
+            self.log("trian_loss", loss)
+            return loss
 
 
     def on_fit_start(self): # TODO how to run model that outside step
@@ -227,162 +295,63 @@ class ClassificationRunner(pl.LightningModule):
                 self.model.template.optimize_to_initialize()
 
 
-class GenerationRunner(ClassificationRunner): # TODO
-    pass
-#     r"""A runner for simple training without training tricks.
-#     Applying training tricks such as ensemble of template or verbalizer, 
-#     or self-training can use other runner class. 
-#     This class is specially implemented for generation.
+class GenerationRunner(BasicRunner):
+    r"""A runner for simple training without training tricks.
+    Applying training tricks such as ensemble of template or verbalizer, 
+    or self-training can use other runner class. 
+    This class is specially implemented for generation.
 
-#     Args:
-#         prompt_model (:obj:`Union[DataParallel, PromptForClassification]`): One ``PromptModel`` object.
-#         train_dataloader (:obj:`PromptDataloader`, optional): The dataloader to bachify and process the training data.
-#         valid_dataloader (:obj:`PromptDataloader`, optionla): The dataloader to bachify and process the val data.
-#         test_dataloader (:obj:`PromptDataloader`, optional): The dataloader to bachify and process the test data.
-#         config (:obj:`CfgNode`): A configuration object.
-#     """
-#     def __init__(self, 
-#                  prompt_model: Union[DataParallel, PromptForGeneration],
-#                  train_dataloader: Optional[PromptDataLoader] = None,
-#                  valid_dataloader: Optional[PromptDataLoader] = None,
-#                  test_dataloader: Optional[PromptDataLoader] = None,
-#                  config: CfgNode = None,
-#                  ):
-#         super().__init__(prompt_model=prompt_model,
-#                          train_dataloader=train_dataloader,
-#                          valid_dataloader=valid_dataloader,
-#                          test_dataloader=test_dataloader,
-#                          config=config)
+    Args:
+        model (:obj:`PromptForClassification`): One ``PromptModel`` object.
+        config (:obj:`CfgNode`): A configuration object.
+    """
+    def __init__(self, 
+                 model: PromptForGeneration,
+                 config: CfgNode = None,
+                ):
+        super().__init__(model, config)
     
-#     def config_loss_function(self,):
-#         r""" No need to config loss_function in generation.
-#         """
-#         pass
-    
-#     def config_optimize(self,):
-#         r"""config the optimizer and scheduler for 1. model 2. template 3. verbalizer
-        
-#         """
-        
-#         self.train_steps_per_epoch = len(self.train_dataloader) // self.config.train.gradient_accumulation_steps
-#         num_training_steps = self.train_steps_per_epoch * self.config.train.num_epochs
+    def validation_step(self, batch, batch_idx):
+        target = batch['tgt_text']
+        _, pred = self.model.generate(batch, **self.config.generation)
+        return pred, target # these are already a cpu list
 
-#         if not self.config.plm.optimize.freeze_para:
-#             no_decay = self.config.plm.optimize.no_decay
-#             weight_decay = self.config.plm.optimize.weight_decay
-#             optimizer_grouped_parameters = [
-#                 {'params': [p for n, p in self.inner_model.model.named_parameters() if not any(nd in n for nd in no_decay)],'weight_decay': weight_decay},
-#                 {'params': [p for n, p in self.inner_model.model.named_parameters() if any(nd in n for nd in no_decay)],'weight_decay': 0.0}
-#             ]
+    def validation_epoch_end(self, val_step_outputs):
+        preds = []
+        targets = []
+        for pred, target in val_step_outputs:
+            preds.extend(pred)
+            targets.extend(target)
 
-#             self.model_optimizer = AdamW(optimizer_grouped_parameters, lr = self.config.plm.optimize.lr)
-#             if self.config.plm.optimize.scheduler is not None:
-#                 self.model_scheduler = get_linear_schedule_with_warmup(
-#                     self.model_optimizer, 
-#                     num_warmup_steps = self.config.plm.optimize.scheduler.num_warmup_steps, 
-#                     num_training_steps = num_training_steps
-#                 )
-#             else:
-#                 self.model_scheduler = None
-#         else:
-#             self.model_optimizer = None
-#             self.model_scheduler = None
+        self.save_results(preds, targets, split='val')
 
+        scores = OrderedDict()
+        for metric in self.config.generation.metric:
+            score = generation_metric(preds, targets, metric)
+            scores[metric] = score
+        self.log("val_metric", scores[self.config.generation.metric[0]]) # TODO metric which
 
-#         class Dummy:
-#             pass
+    def test_step(self, batch, batch_idx):
+        target = batch['tgt_text']
+        _, pred = self.model.generate(batch, **self.config.generation)
+        return pred, target # these are already a cpu list
 
-#         ## template_config 
-#         template_config = self.config[self.config.template]
-#         if template_config.optimize is not None:
-#             if not hasattr(self.inner_model.template, "optimize"):
-#                 # using default gradient descent optimizer.
-#                 no_decay = template_config.optimize.no_decay
-#                 weight_decay = template_config.optimize.weight_decay
-#                 optimizer_grouped_parameters = [
-#                     {'params': [p for n, p in self.inner_model.template.named_parameters() if (not any(nd in n for nd in no_decay)) and p.requires_grad],'weight_decay': weight_decay},
-#                     {'params': [p for n, p in self.inner_model.template.named_parameters() if any(nd in n for nd in no_decay) and p.requires_grad],'weight_decay': 0.0}
-#                 ]
+    def test_epoch_end(self, val_step_outputs):
+        preds = []
+        targets = []
+        for pred, target in val_step_outputs:
+            preds.extend(pred)
+            targets.extend(target)
 
-#                 self.template_optimizer = AdamW(self.inner_model.template.parameters(), 
-#                                                 lr = template_config.optimize.lr,
-#                                                 betas = template_config.optimize.betas,
-#                                                 eps = template_config.optimize.eps)
-#                 if hasattr(template_config.optimize, "scheduler") and template_config.optimize.scheduler is not None:
-#                     self.template_scheduler = get_linear_schedule_with_warmup(
-#                         self.template_optimizer, 
-#                         num_warmup_steps = template_config.optimize.scheduler.num_warmup_steps, 
-#                         num_training_steps = num_training_steps
-#                     )
-#                 else:
-#                     self.template_scheduler = None
-#             else:
-#                 self.template_optimizer = Dummy()
-#                 # resemble a pytorch optimizer for unified training.
-#                 setattr(self.template_optimizer, "step", self.inner_model.template.optimize)
-#                 setattr(self.template_optimizer, "zero_grad", lambda:None)
-#                 self.verbalizer_scheduler = None
-#         else:
-#             self.template_optimizer = None
-#             self.template_scheduler = None
-#         self.optimizers = [self.model_optimizer, self.template_optimizer]
-#         self.schedulers = [self.model_scheduler, self.template_scheduler]
+        self.save_results(preds, targets, split='test')
 
-#     def evaluate(self, dataloader, split, post_evaluate_hook=None):
-#         ret_file_name= os.path.join(self.config.logging.path,"{}_generated_text.txt".format(split))
-        
-#         tgt_texts = []
-#         generated_sentences_all = []
-#         for batch in tqdm(dataloader, desc=split):
-#             batch = batch.to("cuda:{}".format(self.config.environment.local_rank)).to_dict()
-#             output_sequences, generated_sentences = self.inner_model.generate(batch, **self.config.generation)
-#             tgt_texts.extend(batch['tgt_text'])
-#             generated_sentences_all.extend(generated_sentences)
-            
-#         fout = open(ret_file_name,'w')
-#         for i in range(len(generated_sentences_all)):
-#             fout.write(generated_sentences_all[i]+"\n")
-#         fout.close()
+        scores = OrderedDict()
+        for metric in self.config.generation.metric:
+            score = generation_metric(preds, targets, metric)
+            scores[metric] = score
+        self.log("test_metric", scores[self.config.generation.metric[0]]) # TODO metric which
 
-#         scores = OrderedDict()
-#         scores_str = ""
-#         for metric in self.config.generation.metric:
-#             score = generation_metric(generated_sentences_all, tgt_texts, metric)
-#             scores[metric] = score
-#             scores_str += "{}: {}\n".format(metric, score)
-#         logger.info("{} Performance: {}".format(split, scores_str.strip()))
-#         return scores
-
-#     def train_epoch(self, epoch):
-#         self.prompt_model.train()
-#         self.prompt_model.zero_grad()
-#         total_loss = 0.0
-#         sum_loss = 0.0
-#         pbar = tqdm(self.train_dataloader, desc="Train epoch {}".format(epoch))
-#         for step, batch in enumerate(pbar):
-#             batch = batch.to("cuda:{}".format(self.config.environment.local_rank)).to_dict()
-#             loss = self.prompt_model(batch).mean()  #TODO：unbanlanced batch chunks
-#             if self.config.train.gradient_accumulation_steps > 1:
-#                 loss = loss / self.config.train.gradient_accumulation_steps
-#             sum_loss += loss.item()
-#             loss.backward()
-
-#             if (step+1) % self.config.train.gradient_accumulation_steps == 0:
-#                 pbar.set_postfix({ 'loss': sum_loss })
-#                 if self.config.train.max_grad_norm > 0:
-#                     torch.nn.utils.clip_grad_norm_(self.prompt_model.parameters(), self.config.train.max_grad_norm)
-#                 for optimizer in self.optimizers:
-#                     if optimizer is not None:
-#                         optimizer.step()
-
-#                 for scheduler in self.schedulers:
-#                     if scheduler is not None:
-#                         scheduler.step()
-
-#                 for optimizer in self.optimizers:
-#                     if optimizer is not None:
-#                         optimizer.zero_grad()
-#                 total_loss += sum_loss
-#                 sum_loss = 0.
-#         logger.info("Epoch {}, avg_loss: {:.4f}, total_loss: {:.4f}".format(epoch, total_loss / self.train_steps_per_epoch, total_loss))
-#         return total_loss
+    def training_step(self, batch, batch_idx):
+        loss = self.model(batch)
+        self.log("training_loss", loss)
+        return loss
