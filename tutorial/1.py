@@ -31,7 +31,7 @@ bertModel = model_class.model.from_pretrained(model_path)
 
 from openprompt.prompts import ManualTemplate
 promptTemplate = ManualTemplate(
-    text = ["<text_a>", "It", "was", "<mask>"],
+    text = ["<text_a>", "It", "was",  "<mask>"],
     tokenizer = bertTokenizer,
 )
 
@@ -48,7 +48,7 @@ promptVerbalizer = ManualVerbalizer(
 from openprompt import PromptForClassification
 promptModel = PromptForClassification(
     template = promptTemplate,
-    model = bertModel,
+    plm = bertModel,
     verbalizer = promptVerbalizer,
 )
 

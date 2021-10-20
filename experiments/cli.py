@@ -170,10 +170,6 @@ def trainer(EXP_PATH, config, Processor, train_dataset = None, valid_dataset = N
         gpus = config.environment.num_gpus, # remove CUDA_VISIBLE_DEVICES in config yaml, user should set manually in terminal but not change the yaml frequently
 
         max_epochs = config.train.num_epochs,
-        accumulate_grad_batches = config.train.gradient_accumulation_steps,
-
-        gradient_clip_algorithm = "norm",
-        gradient_clip_val = config.train.max_grad_norm,
 
         resume_from_checkpoint = os.path.join(os.path.join(resume or test, "checkpoints"), "last.ckpt") if resume or test else None,
 

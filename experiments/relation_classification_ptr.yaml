@@ -1,6 +1,6 @@
 dataset:
-  name: TACRED
-  path: datasets/RelationClassification/TACRED
+  name: ReTACRED
+  path: datasets/RelationClassification/ReTACRED
 
 plm:
   model_name: roberta
@@ -24,7 +24,7 @@ dataloader:
 train:
   batch_size: 8
   num_epochs: 5
-  gradient_accumulation_steps: 8
+  gradient_accumulation_steps: 1
   max_grad_norm: 1.0
 
 test:
@@ -41,13 +41,13 @@ verbalizer: ptr_verbalizer
 
 ptr_template:
   choice: 0
-  file_path: scripts/RelationClassification/TACRED/ptr_template.txt
+  file_path: scripts/RelationClassification/ReTACRED/ptr_template.txt
   optimize:
     lr: 0.00001
 
 ptr_verbalizer:
   choice: 0
-  file_path: scripts/RelationClassification/TACRED/ptr_verbalizer.jsonl
+  file_path: scripts/RelationClassification/ReTACRED/ptr_verbalizer.jsonl
   
 environment:
   num_gpus: 1
@@ -58,7 +58,7 @@ environment:
 classification:
   loss_function: nll_loss
 
-learning_setting: full
+learning_setting: few_shot
 
 few_shot:
   parent_config: learning_setting
@@ -66,7 +66,7 @@ few_shot:
   
 sampling_from_train:
   parent_config: few_shot_sampling
-  num_examples_per_label: 32
+  num_examples_per_label: 8
   also_sample_dev: True
-  num_examples_per_label_dev: 32
+  num_examples_per_label_dev: 8
   seed: 123

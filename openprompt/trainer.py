@@ -34,6 +34,7 @@ class BasicRunner(pl.LightningModule):
         super().__init__()
         self.model = model
         self.config = config
+        self.automatic_optimization = False
 
     @property
     def num_training_steps(self) -> int:
@@ -49,8 +50,7 @@ class BasicRunner(pl.LightningModule):
         num_devices = max(1, self.trainer.num_gpus, self.trainer.num_processes)
         if self.trainer.tpu_cores:
             num_devices = max(num_devices, self.trainer.tpu_cores)
-
-        effective_accum = self.trainer.accumulate_grad_batches * num_devices
+        effective_accum = num_devices * self.config.train.gradient_accumulation_steps
         return (batches // effective_accum) * self.trainer.max_epochs
 
     @property
@@ -155,10 +155,22 @@ class BasicRunner(pl.LightningModule):
 
         return optimizers
 
-    def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_idx, *args, **kwargs):
-        if optimizer_idx == 0:
-            for idx, opt in enumerate(self.optimizers()):
-                super().optimizer_step(epoch, batch_idx, opt, idx, *args, **kwargs)
+    def accum_step(self, loss, batch_idx):
+        loss = loss / self.config.train.gradient_accumulation_steps
+        self.manual_backward(loss)
+        if (batch_idx + 1) % self.config.train.gradient_accumulation_steps == 0:
+            if self.config.train.max_grad_norm > 0:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.train.max_grad_norm)
+            for opt in self.optimizers():
+                opt.step()
+            for lr_scheduler in self.lr_schedulers():
+                lr_scheduler.step()
+            for opt in self.optimizers():
+                opt.zero_grad()
+
+    def training_epoch_end(self, outputs):
+        for opt in self.optimizers():
+            opt.zero_grad()
 
     def save_results(self, preds, tgts, split):
         ret_file_name = os.path.join(self.config.logging.path, f"{split}_preds.txt")
@@ -252,15 +264,11 @@ class ClassificationRunner(BasicRunner):
             scores[metric] = score
         self.log("test_metric", scores)
 
-    def training_step(self, batch, batch_idx, *args):
-        print(batch_idx, args[0])
-        return None
-        if len(args) == 0 or args[0] == 0:
-            logits = self.model(batch)
-            loss = self.loss_function(logits, batch['label'])
-            self.log("trian_loss", loss)
-            return loss
-
+    def training_step(self, batch, batch_idx):
+        logits = self.model(batch)
+        loss = self.loss_function(logits, batch['label'])
+        self.log("trian_loss", loss, prog_bar = True, logger = True, on_step = True)
+        self.accum_step(loss, batch_idx)
 
     def on_fit_start(self): # TODO how to run model that outside step
         if self.config.calibrate is not None:
