@@ -36,6 +36,10 @@ class BasicRunner(pl.LightningModule):
         self.config = config
         self.automatic_optimization = False
 
+    def on_save_checkpoint(self, checkpoint):
+        print("save here")
+        super().on_save_checkpoint(checkpoint)
+
     @property
     def num_training_steps(self) -> int:
         """Total training steps inferred from datamodule and devices."""

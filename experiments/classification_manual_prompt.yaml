@@ -43,7 +43,7 @@ manual_verbalizer:
   file_path: scripts/TextClassification/agnews/manual_verbalizer.txt
   
 environment:
-  num_gpus: 1
+  num_gpus: 2
   cuda_visible_devices:
     - 0
   local_rank: 0 

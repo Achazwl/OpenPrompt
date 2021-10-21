@@ -167,7 +167,9 @@ def trainer(EXP_PATH, config, Processor, train_dataset = None, valid_dataset = N
         test_dataloader = build_dataloader(test_dataset, template, plm_tokenizer, config, "test")
 
     trainer = PLTrainer(
-        gpus = config.environment.num_gpus, # remove CUDA_VISIBLE_DEVICES in config yaml, user should set manually in terminal but not change the yaml frequently
+        gpus = 1, # TODO remove CUDA_VISIBLE_DEVICES in config yaml, user should set manually in terminal but not change the yaml frequently
+        num_nodes = 2,
+        accelerator = 'ddp',
 
         max_epochs = config.train.num_epochs,
 
