@@ -55,7 +55,7 @@ wrapped_example = mytemplate.wrap_one_example(trainset[0])
 print("Wrapped Example:", wrapped_example)
 
 # ## Define the verbalizer
-# In classification, you need to define your verbalizer, which is a mapping from logits on the vocabulary to the final label probability. Let's have a look at the verbalizer details:
+# In classification, you need to define your verbalizer, which is a mapping from logits on the vocabulary to the final label probability.
 
 from openprompt.prompts import ManualVerbalizer
 import torch
@@ -65,10 +65,10 @@ label_words = [str(l) for l in processor.get_labels()]
 myverbalizer = ManualVerbalizer(tokenizer, num_classes=len(label_words), label_words=label_words, prefix = '')
 print("Verbalizer token id:", myverbalizer.label_words_ids.data)
 
-from openprompt import PromptForClassification # TODO generation is not supported yet
+from openprompt import PromptForClassification
 
 use_cuda = True
-prompt_model = PromptForClassification(plm=plm, template=mytemplate, verbalizer=myverbalizer, freeze_plm=False)
+prompt_model = PromptForClassification(plm=plm, template=mytemplate, verbalizer=myverbalizer)
 if use_cuda:
     prompt_model = prompt_model.cuda()
 
@@ -90,26 +90,18 @@ validation_dataloader = PromptDataLoader(dataset=devset, template=mytemplate, to
 from transformers import  AdamW, get_linear_schedule_with_warmup
 loss_func = torch.nn.CrossEntropyLoss()
 
-no_decay = ['bias', 'LayerNorm.weight']
-
-print("names: ", [n for n, p in prompt_model.plm.named_parameters()])
-# it's always good practice to set no decay to biase and LayerNorm parameters
-optimizer_grouped_parameters1 = [
-    {'params': [p for n, p in prompt_model.plm.named_parameters() if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
-    {'params': [p for n, p in prompt_model.plm.named_parameters() if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
-]
-
-print("names: ", [n for n, p in prompt_model.template.named_parameters()])
-# Using different optimizer for prompt parameters and model parameters
-optimizer_grouped_parameters2 = [
-    # {'params': [p for n,p in prompt_model.template.named_parameters() if "raw_embedding" not in n]}
+print("template name parameters: ", [n for n, p in prompt_model.template.named_parameters()])
+optimizer_grouped_parameters = [
     {'params': [p for n,p in prompt_model.template.named_parameters()]}
 ]
 
-optimizer1 = AdamW(optimizer_grouped_parameters1, lr=0)
-optimizer2 = AdamW(optimizer_grouped_parameters2, lr=5e-1/1024)
+optimizer = AdamW(optimizer_grouped_parameters, lr=5e-1/1024)
 
-for epoch in range(1):
+# flname = "loggg.txt"
+# with open(flname, "w") as fl:
+#     print(file=fl)
+
+for epoch in range(5):
     # ## train
     prompt_model.train()
 
@@ -123,10 +115,8 @@ for epoch in range(1):
         loss.backward()
         # print(prompt_model.template.soft_embeds.grad)
         tot_loss += loss.item()
-        optimizer1.step()
-        optimizer1.zero_grad()
-        optimizer2.step()
-        optimizer2.zero_grad()
+        optimizer.step()
+        optimizer.zero_grad()
         print(f"epoch {epoch} - step {step} / {len(train_dataloader)}: ", loss.item(), tot_loss/(step+1))
     
     # ## evaluate
@@ -143,8 +133,10 @@ for epoch in range(1):
             labels = inputs['label']
             alllabels.extend(labels.cpu().tolist())
             allpreds.extend(torch.argmax(logits, dim=-1).cpu().tolist())
-            print("step :", step)
+            print("val step :", step)
 
     acc = sum([int(i==j) for i,j in zip(allpreds, alllabels)])/len(allpreds)
-    print("accuracy:", acc)
+    print("val accuracy:", acc)
 
+    # with open(flname, "a") as fl:
+    #     print("val accuracy:", acc, file=fl)

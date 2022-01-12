@@ -638,3 +638,109 @@ class PromptForGeneration(nn.Module, GenerationMixin):
             self.device_map = None
         else:
             raise NotImplementedError("parallelize method was not implemented for this plm.")
+
+class CPMPromptForGeneration(nn.Module):
+    def __init__(self,
+                 plm: PreTrainedModel, 
+                 template: Template,
+                ):
+        super().__init__()
+        self.prompt_model = PromptModel(plm, template)
+        self.loss_fct = nn.CrossEntropyLoss()
+        self.config = plm.config
+
+    @property
+    def plm(self):
+        return self.prompt_model.plm
+    
+    @property
+    def template(self):
+        return self.prompt_model.template
+
+    @property
+    def device(self,):
+        r"""Register the device parameter."""
+        return self.plm.device
+
+    def shift_logits_and_labels(self, 
+                                logits, 
+                                loss_ids, 
+                                reference_ids):
+
+        r"""
+        Left shift the label, and make label of the positions that are
+        not loss position to -100, which is the ignore index in pytorch's
+        loss function.
+
+        Args:
+            logits (:obj:`torch.Tensor`):
+            batch (:obj:`InputFeatures`): The input features of batchified data sequences.
+        
+        Returns:
+            shift_logits (:obj:`torch.Tensor`):
+            shift_input_ids (:obj:`List[int]`):
+
+        """
+        
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_loss_ids = loss_ids[..., 1:].contiguous()
+        shift_input_ids = reference_ids[..., 1:].contiguous()
+        shift_input_ids = torch.where(shift_loss_ids>0, shift_input_ids, -100)
+        return shift_logits, shift_input_ids
+        
+    def forward(self, batch: Union[Dict, InputFeatures]) -> torch.Tensor:
+        r""" 
+        This is the forward method of the training of generation in prompt-learning framework. 
+        
+        Args:
+            batch (:obj:`Union[Dict, InputFeatures]`): The input features of batchified data sequences.
+        
+        Returns:
+            loss(:obj:torch.Tensor): The loss of the current generation procedure.
+        """
+        if self.config.is_encoder_decoder:
+            reference_ids = batch['decoder_input_ids']
+        else:
+            reference_ids = batch['input_ids']  # in case in some template, these field is dropped
+        outputs = self.prompt_model(batch)
+        logits = outputs.logits
+        logits, labels = self.shift_logits_and_labels(logits, batch['loss_ids'], reference_ids)
+        loss = self.loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
+        return loss.mean()
+
+    def generate(self, batch: Union[Dict, InputFeatures]):
+        pass
+    
+    def state_dict(self, *args, **kwargs):
+        """ Save the model using template, plm and verbalizer's save methods."""
+        _state_dict = {}
+        if not self.prompt_model.freeze_plm:
+            _state_dict['plm'] = self.plm.state_dict(*args, **kwargs)
+        _state_dict['template'] = self.template.state_dict(*args, **kwargs)
+        return _state_dict
+    
+    def load_state_dict(self, state_dict, *args, **kwargs):
+        """ Load the model using template, plm and verbalizer's load methods."""
+        if 'plm' in state_dict and not self.prompt_model.freeze_plm:
+            self.plm.load_state_dict(state_dict['plm'], *args, **kwargs)
+        self.template.load_state_dict(state_dict['template'], *args, **kwargs)
+
+    def parallelize(self, device_map=None):
+        r"""Parallelize the model across device
+        """
+        if hasattr(self.plm, "parallelize"):
+            self.plm.parallelize(device_map)
+            self.device_map = self.plm.device_map
+            self.template.cuda()
+        else:
+            raise NotImplementedError("parallelize method was not implemented for this plm.")
+
+    def deparallelize(self):
+        r"""Deparallelize the model across device
+        """
+        if hasattr(self.plm, "deparallelize"):
+            self.plm.deparallelize()
+            self.device_map = None
+            self.template.cpu()
+        else:
+            raise NotImplementedError("parallelize method was not implemented for this plm.")

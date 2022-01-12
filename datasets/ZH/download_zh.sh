@@ -35,12 +35,17 @@ rm sentiment.zip
 rm -rf topic_classification
 wget --content-disposition https://cloud.tsinghua.edu.cn/f/c891f5b65bc442c59427/?dl=1
 unzip topic_classification
-rm topic_classification
+rm topic_classification.zip
 
 rm -rf reading_comprehension
 wget --content-disposition https://cloud.tsinghua.edu.cn/f/3fc2ff5b6b4d40178c6a/?dl=1
 unzip reading_comprehension
-rm reading_comprehension
+rm reading_comprehension.zip
+
+rm -rf generation
+wget --content-disposition https://cloud.tsinghua.edu.cn/f/1fc6982652c640c1becd/?dl=1
+unzip generation
+rm generation.zip
 
 rm -rf __MACOSX
 
